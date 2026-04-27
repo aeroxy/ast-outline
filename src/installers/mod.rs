@@ -2,6 +2,9 @@ pub mod paths;
 pub mod io;
 pub mod marker_block;
 pub mod json_hook;
+pub mod common;
+pub mod claude_code;
+pub mod gemini;
 
 use std::path::PathBuf;
 
@@ -62,5 +65,8 @@ pub trait Installer: Sync + Send {
 }
 
 pub fn registry() -> Vec<Box<dyn Installer>> {
-    Vec::new()
+    vec![
+        Box::new(claude_code::ClaudeCode),
+        Box::new(gemini::Gemini),
+    ]
 }
