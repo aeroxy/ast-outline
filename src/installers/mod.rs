@@ -1,4 +1,5 @@
 pub mod paths;
+pub mod io;
 pub mod marker_block;
 pub mod json_hook;
 
