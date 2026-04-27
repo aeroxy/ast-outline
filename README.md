@@ -232,7 +232,7 @@ See the [`wiki/`](./wiki/architecture.md) directory for details on how `ast-outl
 ### Getting started
 
 ```bash
-git clone https://github.com/dim-s/ast-outline.git
+git clone https://github.com/aeroxy/ast-outline.git
 cd ast-outline
 
 # With Cargo
