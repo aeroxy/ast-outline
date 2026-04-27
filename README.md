@@ -85,6 +85,35 @@ cargo install ast-outline
 
 This installs the `ast-outline` CLI globally into `~/.cargo/bin` — make sure that's on your `PATH`.
 
+### Nix
+
+You can run `ast-outline` directly with Nix without installing:
+
+```bash
+nix run github:aeroxy/ast-outline
+```
+
+Or add it as a dependency in your Nix flake:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    ast-outline.url = "github:aeroxy/ast-outline";
+  };
+
+  outputs = { self, nixpkgs, ast-outline }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [ ast-outline.packages.${system}.default ];
+      };
+    };
+}
+```
+
 ---
 
 ## Quick start
@@ -200,11 +229,19 @@ public void TakeDamage(int amount) { ... }
 
 See the [`wiki/`](./wiki/architecture.md) directory for details on how `ast-outline` leverages `ast-grep` internally and how you can add new language adapters.
 
+### Getting started
+
 ```bash
 git clone https://github.com/dim-s/ast-outline.git
 cd ast-outline
 
+# With Cargo
 cargo run -- digest src/
+
+# With Nix flake
+nix develop        # Enter development shell
+nix build          # Build the project
+nix flake check    # Run all checks (tests, clippy, formatting)
 ```
 
 Contributions welcome.
