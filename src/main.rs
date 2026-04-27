@@ -7,19 +7,9 @@ mod core;
 mod prompt;
 mod installers;
 mod hook;
+mod main_helpers;
 
-use crate::adapters::base::LanguageAdapter;
-use crate::adapters::csharp::CSharpAdapter;
-use crate::adapters::go::GoAdapter;
-use crate::adapters::java::JavaAdapter;
-use crate::adapters::kotlin::KotlinAdapter;
-use crate::adapters::python::PythonAdapter;
-use crate::adapters::rust::RustAdapter;
-use crate::adapters::scala::ScalaAdapter;
-use crate::adapters::typescript::TypeScriptAdapter;
 use crate::core::{DigestOptions, OutlineOptions, ParseResult};
-use ast_grep_core::Language;
-use ast_grep_language::{LanguageExt, SupportLang};
 
 #[derive(Parser)]
 #[command(name = "ast-outline")]
@@ -82,55 +72,7 @@ enum Commands {
 }
 
 fn parse_file(path: &Path) -> Option<ParseResult> {
-    let lang = SupportLang::from_path(path);
-    let source = std::fs::read_to_string(path).ok()?;
-
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-    if ext == "md" || ext == "markdown" || ext == "mdx" {
-        return Some(crate::adapters::markdown::parse_markdown(
-            path,
-            source.as_bytes(),
-        ));
-    }
-
-    let lang = lang?;
-
-    match lang {
-        SupportLang::Rust => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(RustAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::Python => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(PythonAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(TypeScriptAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::CSharp => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(CSharpAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::Go => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(GoAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::Java => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(JavaAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::Kotlin => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(KotlinAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        SupportLang::Scala => {
-            let ast_grep = lang.ast_grep(source.clone());
-            Some(ScalaAdapter.parse(path, source.as_bytes(), ast_grep.root()))
-        }
-        _ => None,
-    }
+    crate::main_helpers::parse_file_for_hook(path)
 }
 
 fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
