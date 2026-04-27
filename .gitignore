@@ -3,4 +3,7 @@
 /result
 .DS_Store
 
+/.direnv
+.envrc
+
 **/*.rs.bk
