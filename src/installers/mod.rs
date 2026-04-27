@@ -6,6 +6,7 @@ pub mod common;
 pub mod claude_code;
 pub mod gemini;
 pub mod tabnine;
+pub mod cursor;
 
 use std::path::PathBuf;
 
@@ -70,5 +71,6 @@ pub fn registry() -> Vec<Box<dyn Installer>> {
         Box::new(claude_code::ClaudeCode),
         Box::new(gemini::Gemini),
         Box::new(tabnine::Tabnine),
+        Box::new(cursor::Cursor),
     ]
 }
