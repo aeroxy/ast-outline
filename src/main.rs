@@ -77,7 +77,85 @@ enum Commands {
     },
     /// Print the agent prompt snippet
     Prompt,
+    // Q. T. Felix - start
+    /// Emit the symbol graph as JSON (stable schema)
+    Json {
+        #[command(subcommand)]
+        view: Option<JsonView>,
+
+        /// Files or directories to outline (default JSON view)
+        #[arg(num_args = 0..)]
+        paths: Vec<PathBuf>,
+
+        #[arg(long)]
+        no_private: bool,
+        #[arg(long)]
+        no_fields: bool,
+        #[arg(long)]
+        no_docs: bool,
+        #[arg(long)]
+        no_attrs: bool,
+        #[arg(long)]
+        glob: Option<String>,
+        /// Emit compact (single-line) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+    },
+    // Q. T. Felix - end
 }
+
+// Q. T. Felix - start
+#[derive(Subcommand)]
+enum JsonView {
+    /// Per-file outline tree (default)
+    Outline {
+        #[arg(num_args = 1..)]
+        paths: Vec<PathBuf>,
+        #[arg(long)]
+        no_private: bool,
+        #[arg(long)]
+        no_fields: bool,
+        #[arg(long)]
+        no_docs: bool,
+        #[arg(long)]
+        no_attrs: bool,
+        #[arg(long)]
+        glob: Option<String>,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Filtered outline using digest-style defaults
+    Digest {
+        #[arg(num_args = 1..)]
+        paths: Vec<PathBuf>,
+        #[arg(long)]
+        include_private: bool,
+        #[arg(long)]
+        include_fields: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Source extraction for a symbol
+    Show {
+        path: PathBuf,
+        symbol: String,
+        #[arg(num_args = 0..)]
+        others: Vec<String>,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Subclasses / implementations of a type
+    Implements {
+        target: String,
+        #[arg(num_args = 1..)]
+        paths: Vec<PathBuf>,
+        #[arg(short, long)]
+        direct: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+}
+// Q. T. Felix - end
 
 fn parse_file(path: &Path) -> Option<ParseResult> {
     let lang = SupportLang::from_path(path);
@@ -251,6 +329,134 @@ fn main() {
             Commands::Prompt => {
                 println!("{}", crate::prompt::AGENT_PROMPT);
             }
+            // Q. T. Felix - start
+            Commands::Json {
+                view,
+                paths,
+                no_private,
+                no_fields,
+                no_docs,
+                no_attrs,
+                glob,
+                compact,
+            } => {
+                match view {
+                    Some(JsonView::Outline {
+                        paths,
+                        no_private,
+                        no_fields,
+                        no_docs,
+                        no_attrs,
+                        glob,
+                        compact,
+                    }) => {
+                        let results = walk_and_parse(paths, glob.as_deref());
+                        let opts = OutlineOptions {
+                            include_private: !no_private,
+                            include_fields: !no_fields,
+                            include_xml_doc: !no_docs,
+                            include_attributes: !no_attrs,
+                            include_line_numbers: true,
+                            max_doc_lines: 6,
+                        };
+                        println!(
+                            "{}",
+                            crate::core::render_json_outline(&results, &opts, !compact)
+                        );
+                    }
+                    Some(JsonView::Digest {
+                        paths,
+                        include_private,
+                        include_fields,
+                        compact,
+                    }) => {
+                        let results = walk_and_parse(paths, None);
+                        let opts = OutlineOptions {
+                            include_private: *include_private,
+                            include_fields: *include_fields,
+                            include_xml_doc: true,
+                            include_attributes: true,
+                            include_line_numbers: true,
+                            max_doc_lines: 6,
+                        };
+                        println!(
+                            "{}",
+                            crate::core::render_json_outline(&results, &opts, !compact)
+                        );
+                    }
+                    Some(JsonView::Show {
+                        path,
+                        symbol,
+                        others,
+                        compact,
+                    }) => {
+                        if let Some(res) = parse_file(path) {
+                            let mut symbols = vec![symbol.as_str()];
+                            symbols.extend(others.iter().map(|s| s.as_str()));
+                            let mut all_matches = Vec::new();
+                            for sym in symbols {
+                                all_matches.extend(crate::core::find_symbols(&res, sym));
+                            }
+                            println!(
+                                "{}",
+                                crate::core::render_json_show(&res, &all_matches, !compact)
+                            );
+                        } else {
+                            // Emit a valid empty document if the file is unsupported.
+                            let stub = format!(
+                                "{{\"schema\":\"{}\",\"path\":{:?},\"language\":\"\",\"matches\":[]}}",
+                                crate::core::JSON_SCHEMA_SHOW,
+                                path.to_string_lossy()
+                            );
+                            println!("{}", stub);
+                        }
+                    }
+                    Some(JsonView::Implements {
+                        target,
+                        paths,
+                        direct,
+                        compact,
+                    }) => {
+                        let results = walk_and_parse(paths, None);
+                        let transitive = !direct;
+                        let matches =
+                            crate::core::find_implementations(&results, target, transitive);
+                        println!(
+                            "{}",
+                            crate::core::render_json_implements(
+                                target,
+                                &matches,
+                                transitive,
+                                !compact,
+                            )
+                        );
+                    }
+                    None => {
+                        // Default (no nested view): treat positional paths as outline targets.
+                        if paths.is_empty() {
+                            println!(
+                                "{{\"schema\":\"{}\",\"files\":[]}}",
+                                crate::core::JSON_SCHEMA_OUTLINE
+                            );
+                        } else {
+                            let results = walk_and_parse(paths, glob.as_deref());
+                            let opts = OutlineOptions {
+                                include_private: !no_private,
+                                include_fields: !no_fields,
+                                include_xml_doc: !no_docs,
+                                include_attributes: !no_attrs,
+                                include_line_numbers: true,
+                                max_doc_lines: 6,
+                            };
+                            println!(
+                                "{}",
+                                crate::core::render_json_outline(&results, &opts, !compact)
+                            );
+                        }
+                    }
+                }
+            }
+            // Q. T. Felix - end
         }
     } else if !cli.paths.is_empty() {
         let results = walk_and_parse(&cli.paths, cli.glob.as_deref());
