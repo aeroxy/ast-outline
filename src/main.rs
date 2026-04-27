@@ -69,6 +69,15 @@ enum Commands {
     },
     /// Print the agent prompt snippet
     Prompt,
+    /// Internal: read a tool-call event from stdin and respond
+    Hook {
+        #[arg(long)]
+        protocol: String,
+        #[arg(long, default_value_t = 200)]
+        min_lines: usize,
+        #[arg(long)]
+        always: bool,
+    },
 }
 
 fn parse_file(path: &Path) -> Option<ParseResult> {
@@ -194,6 +203,14 @@ fn main() {
             }
             Commands::Prompt => {
                 println!("{}", crate::prompt::AGENT_PROMPT);
+            }
+            Commands::Hook {
+                protocol,
+                min_lines,
+                always,
+            } => {
+                let exit = hook::run(protocol, *min_lines, *always);
+                std::process::exit(exit);
             }
         }
     } else if !cli.paths.is_empty() {
