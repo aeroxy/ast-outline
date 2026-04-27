@@ -1,5 +1,13 @@
 use colored::Colorize;
+use serde::{Serialize, Serializer};
 use std::path::PathBuf;
+
+// Q. T. Felix - start
+// Stable JSON schema identifires — bump on breaking changes
+pub const JSON_SCHEMA_OUTLINE: &str = "ast-outline.outline.v1";
+pub const JSON_SCHEMA_SHOW: &str = "ast-outline.show.v1";
+pub const JSON_SCHEMA_IMPLEMENTS: &str = "ast-outline.implements.v1";
+// Q. T. Felix - end
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub enum DeclarationKind {
@@ -56,13 +64,24 @@ impl std::fmt::Display for DeclarationKind {
     }
 }
 
-#[derive(Debug, Clone)]
+// Q. T. Felix - start
+impl Serialize for DeclarationKind {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_str())
+    }
+}
+// Q. T. Felix - end
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Declaration {
     pub kind: DeclarationKind,
     pub name: String,
     pub signature: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bases: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub attrs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub docs: Vec<String>,
     pub docs_inside: bool,
     pub visibility: String,
@@ -71,6 +90,7 @@ pub struct Declaration {
     pub start_byte: usize,
     pub end_byte: usize,
     pub doc_start_byte: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Declaration>,
 }
 
@@ -90,15 +110,23 @@ impl Declaration {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ParseResult {
+    #[serde(serialize_with = "_serialize_path")]
     pub path: PathBuf,
     pub language: &'static str,
+    #[serde(skip)]
     pub source: Vec<u8>,
     pub line_count: usize,
-    pub declarations: Vec<Declaration>,
     pub error_count: usize,
+    pub declarations: Vec<Declaration>,
 }
+
+// Q. T. Felix - start
+fn _serialize_path<S: Serializer>(p: &PathBuf, ser: S) -> Result<S::Ok, S::Error> {
+    ser.serialize_str(&p.to_string_lossy())
+}
+// Q. T. Felix - end
 
 #[derive(Debug, Clone)]
 pub struct OutlineOptions {
@@ -532,13 +560,14 @@ fn _wrap_tokens(tokens: &[String], width: usize, indent: &str) -> Vec<String> {
     out
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SymbolMatch {
     pub qualified_name: String,
     pub kind: String,
     pub start_line: usize,
     pub end_line: usize,
     pub source: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ancestor_signatures: Vec<String>,
 }
 
@@ -610,12 +639,13 @@ fn _trail_matches(trail: &[String], parts: &[&str]) -> bool {
     true
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub struct ImplMatch {
     pub path: String,
     pub start_line: usize,
     pub kind: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub via: Vec<String>,
 }
 
@@ -742,3 +772,144 @@ fn _digest_markdown(
     }
     out
 }
+
+// Q. T. Felix - start
+// --- JSON view ---
+//
+// JSON is just another view over the same Declaration symbol graph that
+// powers the terminal/digest formatters. The schema is versioned via the
+// JSON_SCHEMA_* constants above; bump those on breaking changes.
+
+#[derive(Serialize)]
+struct JsonOutlineDoc<'a> {
+    schema: &'static str,
+    files: Vec<JsonFile<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonFile<'a> {
+    path: String,
+    language: &'static str,
+    line_count: usize,
+    error_count: usize,
+    declarations: Vec<Declaration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct JsonImplementsDoc<'a> {
+    schema: &'static str,
+    target: &'a str,
+    transitive: bool,
+    matches: Vec<JsonImplMatch<'a>>,
+}
+
+#[derive(Serialize)]
+struct JsonImplMatch<'a> {
+    path: &'a str,
+    start_line: usize,
+    kind: &'a str,
+    name: &'a str,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    via: &'a [String],
+}
+
+#[derive(Serialize)]
+struct JsonShowDoc<'a> {
+    schema: &'static str,
+    path: String,
+    language: &'static str,
+    matches: Vec<&'a SymbolMatch>,
+}
+
+fn _filter_decls(decls: &[Declaration], opts: &OutlineOptions) -> Vec<Declaration> {
+    use DeclarationKind::*;
+    let mut out = Vec::new();
+    for d in decls {
+        let is_field = matches!(d.kind, Field | Property | Event | Indexer);
+        if is_field && !opts.include_fields {
+            continue;
+        }
+        if d.visibility == "private" && !opts.include_private {
+            continue;
+        }
+        let mut clone = d.clone();
+        clone.children = _filter_decls(&d.children, opts);
+        out.push(clone);
+    }
+    out
+}
+
+pub fn render_json_outline(results: &[ParseResult], opts: &OutlineOptions, pretty: bool) -> String {
+    let files: Vec<JsonFile> = results
+        .iter()
+        .map(|r| JsonFile {
+            path: r.path.to_string_lossy().to_string(),
+            language: r.language,
+            line_count: r.line_count,
+            error_count: r.error_count,
+            declarations: _filter_decls(&r.declarations, opts),
+            warning: if r.error_count > 0 {
+                Some("output may be incomplete")
+            } else {
+                None
+            },
+        })
+        .collect();
+
+    let doc = JsonOutlineDoc {
+        schema: JSON_SCHEMA_OUTLINE,
+        files,
+    };
+    if pretty {
+        serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
+    } else {
+        serde_json::to_string(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
+    }
+}
+
+pub fn render_json_implements(
+    target: &str,
+    matches: &[ImplMatch],
+    transitive: bool,
+    pretty: bool,
+) -> String {
+    let mapped: Vec<JsonImplMatch> = matches
+        .iter()
+        .map(|m| JsonImplMatch {
+            path: &m.path,
+            start_line: m.start_line,
+            kind: &m.kind,
+            name: &m.name,
+            via: &m.via,
+        })
+        .collect();
+
+    let doc = JsonImplementsDoc {
+        schema: JSON_SCHEMA_IMPLEMENTS,
+        target,
+        transitive,
+        matches: mapped,
+    };
+    if pretty {
+        serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
+    } else {
+        serde_json::to_string(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
+    }
+}
+
+pub fn render_json_show(result: &ParseResult, matches: &[SymbolMatch], pretty: bool) -> String {
+    let doc = JsonShowDoc {
+        schema: JSON_SCHEMA_SHOW,
+        path: result.path.to_string_lossy().to_string(),
+        language: result.language,
+        matches: matches.iter().collect(),
+    };
+    if pretty { // it perfectly same lal
+        serde_json::to_string_pretty(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
+    } else {
+        serde_json::to_string(&doc).unwrap_or_else(|e| format!("{{\"error\":\"{}\"}}", e))
+    }
+}
+// Q. T. Felix - end
