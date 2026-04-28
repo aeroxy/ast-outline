@@ -6,40 +6,61 @@
 
     crane.url = "github:ipetkov/crane";
 
-    flake-utils.url = "github:numtide/flake-utils";
-
+    flake-parts.url = "github:hercules-ci/flake-parts";
   };
-
-  outputs =
-    {
-      self,
-      nixpkgs,
-      crane,
-      flake-utils,
-      ...
-    }:
-    flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = nixpkgs.legacyPackages.${system};
-
-        inherit (pkgs) lib;
-
+  outputs = {
+    flake-parts,
+    crane,
+    ...
+  } @ inputs:
+    flake-parts.lib.mkFlake {inherit inputs;} {
+      # Allows definition of system-specific attributes
+      # without needing to declare the system explicitly!
+      #
+      # Quick rundown of the provided arguments:
+      # - config is a reference to the full configuration, lazily evaluated
+      # - self' is the outputs as provided here, without system. (self'.packages.default)
+      # - inputs' is the input without needing to specify system (inputs'.foo.packages.bar)
+      # - pkgs is an instance of nixpkgs for your specific system
+      # - system is the system this configuration is for
+      perSystem = {
+        config,
+        self',
+        inputs',
+        pkgs,
+        system,
+        lib,
+        ...
+      }: let
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
-        # Common arguments can be set here to avoid repeating them later
+        # Read package metadata from Cargo.toml so we don't have to
+        # duplicate it here.
+        cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
+        crateName = craneLib.crateNameFromCargoToml {cargoToml = ./Cargo.toml;};
+
+        # Cargo defaults the binary name to the package name when the crate
+        # exposes a single `src/main.rs` and no explicit `[[bin]]` targets
+        # override it. Honour any `[[bin]]` entry if one is added later.
+        mainProgram =
+          if (cargoToml ? bin) && (builtins.length cargoToml.bin > 0)
+          then (builtins.head cargoToml.bin).name
+          else crateName.pname;
+
         commonArgs = {
           inherit src;
+          inherit (crateName) pname version;
           strictDeps = true;
 
-          buildInputs = [
-            # Add additional build inputs here
-          ]
-          ++ lib.optionals pkgs.stdenv.isDarwin [
-            # Additional darwin specific inputs can be set here
-            pkgs.libiconv
-          ];
+          buildInputs =
+            [
+              # Add additional build inputs here
+            ]
+            ++ lib.optionals pkgs.stdenv.isDarwin [
+              # Additional darwin specific inputs can be set here
+              pkgs.libiconv
+            ];
 
           # Additional environment variables can be set directly
           # MY_CUSTOM_VAR = "some value";
@@ -51,17 +72,23 @@
 
         # Build the actual crate itself, reusing the dependency
         # artifacts from above.
-        ast-outline = craneLib.buildPackage (
+        astOutline = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
+            doCheck = false;
+            meta = {
+              inherit (cargoToml.package) description;
+              homepage = cargoToml.package.repository;
+              license = lib.getLicenseFromSpdxId cargoToml.package.license;
+              inherit mainProgram;
+            };
           }
         );
-      in
-      {
+      in {
         checks = {
           # Build the crate as part of `nix flake check` for convenience
-          inherit ast-outline;
+          inherit astOutline;
 
           # Run clippy (and deny all warnings) on the crate source,
           # again, reusing the dependency artifacts from above.
@@ -69,7 +96,7 @@
           # Note that this is done as a separate derivation so that
           # we can block the CI if there are issues here, but not
           # prevent downstream consumers from building our crate by itself.
-          my-crate-clippy = craneLib.cargoClippy (
+          astOutlineClippy = craneLib.cargoClippy (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -77,7 +104,7 @@
             }
           );
 
-          my-crate-doc = craneLib.cargoDoc (
+          astOutlineDoc = craneLib.cargoDoc (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -87,21 +114,10 @@
             }
           );
 
-          # Check formatting
-          my-crate-fmt = craneLib.cargoFmt {
-            inherit src;
-          };
-
-          my-crate-toml-fmt = craneLib.taploFmt {
-            src = pkgs.lib.sources.sourceFilesBySuffices src [ ".toml" ];
-            # taplo arguments can be further customized below as needed
-            # taploExtraArgs = "--config ./taplo.toml";
-          };
-
           # Run tests with cargo-nextest
-          # Consider setting `doCheck = false` on `ast-outline` if you do not want
+          # Consider setting `doCheck = false` on `astOutline` if you do not want
           # the tests to run twice
-          my-crate-nextest = craneLib.cargoNextest (
+          astOutlineNextest = craneLib.cargoNextest (
             commonArgs
             // {
               inherit cargoArtifacts;
@@ -112,17 +128,20 @@
           );
         };
 
+        # This is equivalent to packages.<system>.default
         packages = {
-          default = ast-outline;
+          default = astOutline;
         };
 
-        apps.default = flake-utils.lib.mkApp {
-          drv = ast-outline;
+        apps.default = {
+          type = "app";
+          program = lib.getExe astOutline;
+          inherit (astOutline) meta;
         };
 
         devShells.default = craneLib.devShell {
           # Inherit inputs from checks.
-          checks = self.checks.${system};
+          checks = self'.checks;
 
           # Additional dev-shell environment variables can be set directly
           # MY_CUSTOM_DEVELOPMENT_VAR = "something else";
@@ -132,6 +151,14 @@
             # pkgs.ripgrep
           ];
         };
-      }
-    );
+      };
+
+      flake = {
+        # The usual flake attributes can be defined here, including
+        # system-agnostic and/or arbitrary outputs.
+      };
+
+      # Declared systems that your flake supports. These will be enumerated in perSystem
+      systems = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
+    };
 }
