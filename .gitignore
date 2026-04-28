@@ -1,6 +1,6 @@
 /target
 /refs
+/result
 .DS_Store
 
 **/*.rs.bk
-Cargo.lock
