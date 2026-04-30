@@ -1,8 +1,8 @@
 class AstOutline < Formula
   desc "Fast, AST-based structural outline for source files"
   homepage "https://github.com/aeroxy/ast-outline"
-  url "https://github.com/aeroxy/ast-outline/releases/download/0.1.4/ast-outline-macos-arm64.zip"
-  sha256 "7eca2a03ea0ed778220c5028060f2e3cc2219891ec8911e46237a5809fab250c"
+  url "https://github.com/aeroxy/ast-outline/releases/download/0.2.0/ast-outline-macos-arm64.zip"
+  sha256 "90557d0392fde164789c9cd1c7d426de4d68920c697cbd577267ed8856e20190"
   license "MIT"
 
   def install

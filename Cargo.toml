@@ -1,6 +1,6 @@
 [package]
 name = "ast-outline"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 description = "Fast, AST-based structural outline for source files. Built for LLM coding agents and humans."
 authors = ["Aero <aero.windwalker@gmail.com>"]

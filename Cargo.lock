@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "ast-outline"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "ast-grep-core",
  "ast-grep-language",

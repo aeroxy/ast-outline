@@ -16,6 +16,17 @@ It is written natively in Rust, relying heavily on the [tree-sitter](https://tre
    - `implements` performs a generic Breadth-First-Search across the IR trees of the entire repository to find inheritance hierarchies.
    - `--json` is a fifth rendering mode: any of the above commands accepts `--json` to serialise the same `Declaration` IR directly via `serde_json` into a versioned JSON schema, instead of formatting it as text. Add `--compact` for single-line output.
 
+## MCP Server (`src/mcp/`)
+
+`ast-outline mcp` runs the binary as a [Model Context Protocol](https://modelcontextprotocol.io) server so coding agents can invoke the same operations as native tools. The implementation is intentionally tiny:
+
+- **Transport**: line-delimited JSON-RPC 2.0 on stdin/stdout, fully synchronous — no tokio, no extra dependencies. The cost is ~600 KB of binary (~1%) and zero overhead on the regular CLI commands, since none of the MCP code runs unless you invoke the `mcp` subcommand.
+- **`src/mcp/protocol.rs`**: serde types for `Request`/`Response`/`RpcError` and the standard JSON-RPC error codes.
+- **`src/mcp/tools.rs`**: declares the four tool schemas and dispatches `tools/call` into the existing `core::render_*` functions. Each tool maps 1:1 to a CLI subcommand and reuses its render logic byte-for-byte, so the JSON schemas (`ast-outline.outline.v1`, `ast-outline.show.v1`, `ast-outline.implements.v1`) are shared with the CLI's `--json` output.
+- **`src/mcp/mod.rs`**: read loop, method routing (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`), and panic-safe tool dispatch (panics are surfaced as `-32603 internal error` instead of taking the server down).
+
+Tools are exposed in their text form by default — that's what the agent prompt is built around — with `json: true` available for any client that wants the structured payload.
+
 ## Adding a New Language
 
 Adding a new language is incredibly straightforward due to the foundation provided by `ast-grep-language`.

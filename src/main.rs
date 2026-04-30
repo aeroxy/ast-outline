@@ -8,6 +8,7 @@ mod prompt;
 mod installers;
 mod hook;
 mod main_helpers;
+mod mcp;
 
 use crate::core::{DigestOptions, OutlineOptions, ParseResult};
 
@@ -141,13 +142,15 @@ enum Commands {
         #[arg(long)]
         always: bool,
     },
+    /// Run as an MCP (Model Context Protocol) server over stdio
+    Mcp,
 }
 
-fn parse_file(path: &Path) -> Option<ParseResult> {
+pub(crate) fn parse_file(path: &Path) -> Option<ParseResult> {
     crate::main_helpers::parse_file_for_hook(path)
 }
 
-fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
+pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<ParseResult> {
     let (tx, rx) = std::sync::mpsc::channel();
 
     if paths.is_empty() {
@@ -364,6 +367,10 @@ fn main() {
                 always,
             } => {
                 let exit = hook::run(protocol, *min_lines, *always);
+                std::process::exit(exit);
+            }
+            Commands::Mcp => {
+                let exit = mcp::run();
                 std::process::exit(exit);
             }
         }

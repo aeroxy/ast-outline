@@ -288,6 +288,42 @@ changes, so downstream tooling can guard on it:
 
 ---
 
+## MCP server
+
+Run `ast-outline` as a [Model Context Protocol](https://modelcontextprotocol.io)
+server over stdio so any MCP-aware coding agent can call the same operations
+as native tools — no shell parsing required:
+
+```bash
+ast-outline mcp
+```
+
+The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes four
+tools that map 1:1 to the CLI commands:
+
+| Tool | Equivalent CLI | Returns |
+|------|----------------|---------|
+| `outline`    | `ast-outline <paths>`             | text, or `ast-outline.outline.v1` with `json: true` |
+| `digest`     | `ast-outline digest <paths>`      | text, or `ast-outline.outline.v1` with `json: true` |
+| `show`       | `ast-outline show <path> <syms>`  | text, or `ast-outline.show.v1` with `json: true` |
+| `implements` | `ast-outline implements <type> <paths>` | text, or `ast-outline.implements.v1` with `json: true` |
+
+Wire it into a client by pointing at the binary:
+
+```jsonc
+{
+  "mcpServers": {
+    "ast-outline": { "command": "ast-outline", "args": ["mcp"] }
+  }
+}
+```
+
+The server is fully synchronous, has no extra runtime dependencies, and adds
+roughly 1% to the binary size. The CLI itself is unaffected — none of the MCP
+code runs unless you invoke the `mcp` subcommand.
+
+---
+
 ## Architecture & Development
 
 See the [`wiki/`](./wiki/architecture.md) directory for details on how `ast-outline` leverages `ast-grep` internally and how you can add new language adapters.
