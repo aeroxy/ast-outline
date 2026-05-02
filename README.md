@@ -4,16 +4,9 @@ Fast, AST-based **structural outline** for source files — classes, methods,
 signatures with line numbers, but **no method bodies**. Built for LLM coding
 agents and humans who want to read the *shape* of a file before diving into the whole thing.
 
-`ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and it utilizes `rayon` to parse your entire workspace concurrently in milliseconds.
+`ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and it utilizes `rayon` to parse your entire workspace concurrently in milliseconds. This project's `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline), while these three commands are similar, the Rust code itself was largely originated from a bigger code-agent project and uses `ast-grep` for parsing, not a direct port.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-![Status: beta](https://img.shields.io/badge/status-beta-orange.svg)
-
----
-
-## Acknowledgements
-
-This project's CLI core problem framing (5–10× token savings) and `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline). The Rust code itself was largely originated from a bigger code-agent project and uses `ast-grep` for parsing, not a direct port.
 
 ---
 
@@ -26,7 +19,7 @@ Modern agentic coding tools explore codebases by reading files directly — not 
 
 `ast-outline` closes that gap. It's a **pre-reading layer**:
 
-1. **Token savings — typically 5–10×.** An outline replaces a full file read when you only need structural understanding.
+1. **95% token saving.** An outline replaces a full file read when you only need structural understanding.
 2. **Faster exploration.** A whole module's public API fits on one screen.
 3. **Precise navigation.** Every declaration has a line range (`L42-58`). You go straight to the method body you need.
 4. **AST accuracy, not fuzzy match.** `implements` and `show` understand real syntax — no false positives from comments or strings like `grep`.
@@ -47,12 +40,15 @@ Agent: grep "IDamageable" src/   # noisy, lots of false matches
 **With `ast-outline`:**
 
 ```
-Agent: ast-outline digest src/Combat         # ~100 lines, whole module
+Agent: ast-outline surface .                 # one-page true public API of the crate/package
+Agent: ast-outline digest src/Combat         # ~100 lines, whole module's structure
 Agent: ast-outline implements IDamageable    # precise list, no grep noise
+Agent: ast-outline search "damage handling"  # hybrid BM25 + dense semantic, ranked
 Agent: ast-outline show Player.cs TakeDamage # just the method body
 ```
 
 Result: **same understanding, a fraction of the tokens, a fraction of the round-trips.**
+For "what does this package actually expose?" — historically the most expensive question, since the answer was "read every file" — `surface` resolves the re-export graph and gives you the answer directly, often replacing dozens of file reads with a single call.
 
 ---
 
@@ -322,6 +318,10 @@ changes, so downstream tooling can guard on it:
 | `ast-outline.outline.v1` | default outline, `digest --json` |
 | `ast-outline.show.v1` | `show --json` |
 | `ast-outline.implements.v1` | `implements --json` |
+| `ast-outline.surface.v1` | `surface --json` |
+| `ast-outline.search.v1` | `search --json` |
+| `ast-outline.related.v1` | `find-related --json` |
+| `ast-outline.index-stats.v1` | `index --stats --json` |
 
 ---
 
@@ -335,18 +335,19 @@ as native tools — no shell parsing required:
 ast-outline mcp
 ```
 
-The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes four
+The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes eight
 tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
 |------|----------------|---------|
-| `outline`    | `ast-outline <paths>`             | text, or `ast-outline.outline.v1` with `json: true` |
-| `digest`       | `ast-outline digest <paths>`            | text, or `ast-outline.outline.v1` with `json: true` |
-| `show`         | `ast-outline show <path> <syms>`        | text, or `ast-outline.show.v1` with `json: true` |
-| `implements`   | `ast-outline implements <type> <paths>` | text, or `ast-outline.implements.v1` with `json: true` |
-| `search`       | `ast-outline search "<query>"`          | text, or `ast-outline.search.v1` with `json: true` |
-| `find_related` | `ast-outline find-related <file>:<line>`| text, or `ast-outline.related.v1` with `json: true` |
-| `index`        | `ast-outline index`                     | text, or `ast-outline.index-stats.v1` with `json: true` |
+| `outline`      | `ast-outline <paths>`                    | text, or `ast-outline.outline.v1` with `json: true` |
+| `digest`       | `ast-outline digest <paths>`             | text, or `ast-outline.outline.v1` with `json: true` |
+| `show`         | `ast-outline show <path> <syms>`         | text, or `ast-outline.show.v1` with `json: true` |
+| `implements`   | `ast-outline implements <type> <paths>`  | text, or `ast-outline.implements.v1` with `json: true` |
+| `surface`      | `ast-outline surface [path]`             | text, or `ast-outline.surface.v1` with `json: true` |
+| `search`       | `ast-outline search "<query>"`           | text, or `ast-outline.search.v1` with `json: true` |
+| `find_related` | `ast-outline find-related <file>:<line>` | text, or `ast-outline.related.v1` with `json: true` |
+| `index`        | `ast-outline index`                      | text, or `ast-outline.index-stats.v1` with `json: true` |
 
 Wire it into a client by pointing at the binary:
 
@@ -407,7 +408,7 @@ For more on what gets indexed (the five filter layers, `.ast-outline-ignore` syn
 
 ## Architecture & Development
 
-See the [`wiki/`](./wiki/architecture.md) directory for details on how `ast-outline` leverages `ast-grep` internally and how you can add new language adapters.
+See the [wiki](https://github.com/aeroxy/ast-outline/blob/main/wiki/architecture.md) on GitHub for details on how `ast-outline` leverages `ast-grep` internally and how you can add new language adapters.
 
 ### Getting started
 
