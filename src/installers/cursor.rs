@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 
+use serde_json::{json, Value};
+
 use super::paths;
-use super::{common, Change, Detection, InstallOpts, Installer, Scope, Status};
+use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
 use crate::prompt::AGENT_PROMPT;
 
 pub struct Cursor;
+
+const MCP_KEY_PATH: &[&str] = &["mcpServers"];
+const MCP_SERVER_NAME: &str = "ast-outline";
 
 impl Cursor {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -12,6 +17,15 @@ impl Cursor {
             Scope::Local(root) => Ok(root.join(".cursor/rules/ast-outline.mdc")),
             Scope::Global => paths::under_home(".cursor/User Rules.md"),
         }
+    }
+    fn mcp_path(&self, scope: &Scope) -> Result<PathBuf, String> {
+        match scope {
+            Scope::Local(root) => Ok(root.join(".cursor/mcp.json")),
+            Scope::Global => paths::under_home(".cursor/mcp.json"),
+        }
+    }
+    fn mcp_entry(&self) -> Value {
+        json!({ "command": "ast-outline", "args": ["mcp"] })
     }
 }
 
@@ -40,16 +54,43 @@ impl Installer for Cursor {
         Ok(Change::NotApplicable)
     }
 
+    fn install_mcp(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
+        common::install_json_object_in(
+            &self.mcp_path(scope)?,
+            MCP_KEY_PATH,
+            MCP_SERVER_NAME,
+            self.mcp_entry(),
+            opts,
+        )
+    }
+
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {
         let mut changes = Vec::new();
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
+            changes.push(c);
+        }
+        if let Some(c) = common::uninstall_json_object_in(
+            &self.mcp_path(scope)?,
+            MCP_KEY_PATH,
+            MCP_SERVER_NAME,
+            opts,
+        )? {
             changes.push(c);
         }
         Ok(changes)
     }
 
     fn status(&self, scope: &Scope) -> Status {
-        common::status_for_prompt_only(self.prompt_path(scope).ok().as_deref())
+        let mut s = common::status_for_prompt_only(self.prompt_path(scope).ok().as_deref());
+        if let Ok(mcp_p) = self.mcp_path(scope) {
+            if let Ok(Some(contents)) = super::io::read_optional(&mcp_p) {
+                if let Ok(root) = serde_json::from_str::<Value>(&contents) {
+                    s.mcp_installed =
+                        json_object::is_installed(&root, MCP_KEY_PATH, MCP_SERVER_NAME);
+                }
+            }
+        }
+        s
     }
 }
 
@@ -79,5 +120,47 @@ mod tests {
             .install_hook(&scope, &InstallOpts::default())
             .unwrap();
         assert!(matches!(change, Change::NotApplicable));
+    }
+
+    #[test]
+    fn install_mcp_writes_cursor_mcp_json() {
+        let dir = TempDir::new().unwrap();
+        let scope = Scope::Local(dir.path().to_path_buf());
+        let change = Cursor
+            .install_mcp(&scope, &InstallOpts::default())
+            .unwrap();
+        assert!(matches!(change, Change::Created(_)));
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+    }
+
+    #[test]
+    fn install_mcp_preserves_other_servers() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join(".cursor/mcp.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"mcpServers":{"docs":{"command":"x","args":[]}}}"#).unwrap();
+        let scope = Scope::Local(dir.path().to_path_buf());
+        Cursor.install_mcp(&scope, &InstallOpts::default()).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["docs"]["command"], "x");
+        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+    }
+
+    #[test]
+    fn uninstall_removes_mcp_entry() {
+        let dir = TempDir::new().unwrap();
+        let scope = Scope::Local(dir.path().to_path_buf());
+        let opts = InstallOpts::default();
+        Cursor.install_mcp(&scope, &opts).unwrap();
+        Cursor.uninstall(&scope, &opts).unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(v["mcpServers"].get("ast-outline").is_none());
     }
 }

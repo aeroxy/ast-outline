@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 
 use super::json_hook::MARKER;
 use super::paths;
-use super::{common, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::AGENT_PROMPT;
+use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
+use crate::prompt::{agent_skill_md, AGENT_PROMPT};
 
 pub struct ClaudeCode;
 
@@ -15,6 +15,12 @@ const HOOK_PATH: &[&str] = &["hooks", "PreToolUse"];
 /// `CLAUDE.md`. Shadowing them with `.claude/agents/<Name>.md` is the official
 /// way to push the ast-outline prompt into their system prompt.
 const SHADOWED_SUBAGENTS: &[&str] = &["Explore"];
+
+const MCP_KEY_PATH: &[&str] = &["mcpServers"];
+const MCP_SERVER_NAME: &str = "ast-outline";
+/// First-line marker used to confirm a SKILL.md file is one we wrote
+/// before deleting it during uninstall.
+const SKILL_MARKER: &str = "name: ast-outline";
 
 impl ClaudeCode {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -34,6 +40,22 @@ impl ClaudeCode {
             Scope::Local(root) => Ok(root.join(".claude/agents").join(format!("{}.md", name))),
             Scope::Global => paths::under_home(&format!(".claude/agents/{}.md", name)),
         }
+    }
+    fn mcp_path(&self, scope: &Scope) -> Result<PathBuf, String> {
+        match scope {
+            Scope::Local(root) => Ok(root.join(".mcp.json")),
+            // Global MCP config is at the home root, NOT inside .claude/.
+            Scope::Global => paths::under_home(".claude.json"),
+        }
+    }
+    fn skill_path(&self, scope: &Scope) -> Result<PathBuf, String> {
+        match scope {
+            Scope::Local(root) => Ok(root.join(".claude/skills/ast-outline/SKILL.md")),
+            Scope::Global => paths::under_home(".claude/skills/ast-outline/SKILL.md"),
+        }
+    }
+    fn mcp_entry(&self) -> Value {
+        json!({ "command": "ast-outline", "args": ["mcp"] })
     }
     fn hook_command(&self, opts: &InstallOpts) -> String {
         let mut cmd = format!(
@@ -104,6 +126,20 @@ impl Installer for ClaudeCode {
         Ok(changes)
     }
 
+    fn install_mcp(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
+        common::install_json_object_in(
+            &self.mcp_path(scope)?,
+            MCP_KEY_PATH,
+            MCP_SERVER_NAME,
+            self.mcp_entry(),
+            opts,
+        )
+    }
+
+    fn install_skills(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
+        common::install_plain_file_in(&self.skill_path(scope)?, &agent_skill_md(), opts)
+    }
+
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {
         let mut changes = Vec::new();
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
@@ -119,16 +155,43 @@ impl Installer for ClaudeCode {
                 changes.push(c);
             }
         }
+        if let Some(c) = common::uninstall_json_object_in(
+            &self.mcp_path(scope)?,
+            MCP_KEY_PATH,
+            MCP_SERVER_NAME,
+            opts,
+        )? {
+            changes.push(c);
+        }
+        if let Some(c) =
+            common::uninstall_plain_file_in(&self.skill_path(scope)?, SKILL_MARKER, opts)?
+        {
+            changes.push(c);
+        }
         Ok(changes)
     }
 
     fn status(&self, scope: &Scope) -> Status {
-        common::status_for(
+        let mut s = common::status_for(
             self.prompt_path(scope).ok().as_deref(),
             self.settings_path(scope).ok().as_deref(),
             HOOK_PATH,
             matches_entry,
-        )
+        );
+        if let Ok(mcp_p) = self.mcp_path(scope) {
+            if let Ok(Some(contents)) = super::io::read_optional(&mcp_p) {
+                if let Ok(root) = serde_json::from_str::<Value>(&contents) {
+                    s.mcp_installed =
+                        json_object::is_installed(&root, MCP_KEY_PATH, MCP_SERVER_NAME);
+                }
+            }
+        }
+        if let Ok(skill_p) = self.skill_path(scope) {
+            if let Ok(Some(contents)) = super::io::read_optional(&skill_p) {
+                s.skills_installed = contents.contains(SKILL_MARKER);
+            }
+        }
+        s
     }
 }
 
@@ -345,5 +408,220 @@ mod tests {
         let opts = InstallOpts { dry_run: true, ..Default::default() };
         ClaudeCode.install_subagents(&scope, &opts).unwrap();
         assert!(!dir.path().join(".claude/agents/Explore.md").exists());
+    }
+
+    #[test]
+    fn install_mcp_creates_mcp_json_with_entry() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let change = ClaudeCode
+            .install_mcp(&scope, &InstallOpts::default())
+            .unwrap();
+        assert!(matches!(change, Change::Created(_)));
+        let contents = std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        let v: Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert_eq!(v["mcpServers"]["ast-outline"]["args"][0], "mcp");
+    }
+
+    #[test]
+    fn install_mcp_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_mcp(&scope, &opts).unwrap();
+        let after_first = std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        let change = ClaudeCode.install_mcp(&scope, &opts).unwrap();
+        assert!(matches!(change, Change::Skipped { .. }));
+        let after_second = std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+        assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn install_mcp_preserves_other_servers() {
+        let dir = TempDir::new().unwrap();
+        let mcp_path = dir.path().join(".mcp.json");
+        std::fs::write(
+            &mcp_path,
+            r#"{"mcpServers":{"other":{"command":"x","args":[]}}}"#,
+        )
+        .unwrap();
+        let scope = local_scope(&dir);
+        ClaudeCode
+            .install_mcp(&scope, &InstallOpts::default())
+            .unwrap();
+        let contents = std::fs::read_to_string(&mcp_path).unwrap();
+        let v: Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
+        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+    }
+
+    #[test]
+    fn install_mcp_preserves_unrelated_top_level_keys() {
+        // Mimics ~/.claude.json: many flat top-level keys that must survive.
+        let dir = TempDir::new().unwrap();
+        let mcp_path = dir.path().join(".mcp.json");
+        let mut seed = serde_json::Map::new();
+        for i in 0..50 {
+            seed.insert(format!("key_{:02}", i), json!(i));
+        }
+        seed.insert("mcpServers".into(), json!({}));
+        std::fs::write(&mcp_path, serde_json::to_string(&seed).unwrap()).unwrap();
+        let scope = local_scope(&dir);
+        ClaudeCode
+            .install_mcp(&scope, &InstallOpts::default())
+            .unwrap();
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        for i in 0..50 {
+            assert_eq!(v[format!("key_{:02}", i)], json!(i), "key_{:02} lost", i);
+        }
+        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+    }
+
+    #[test]
+    fn install_mcp_dry_run_does_not_write() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts { dry_run: true, ..Default::default() };
+        ClaudeCode.install_mcp(&scope, &opts).unwrap();
+        assert!(!dir.path().join(".mcp.json").exists());
+    }
+
+    #[test]
+    fn install_skills_creates_skill_md_with_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let change = ClaudeCode
+            .install_skills(&scope, &InstallOpts::default())
+            .unwrap();
+        assert!(matches!(change, Change::Created(_)));
+        let contents =
+            std::fs::read_to_string(dir.path().join(".claude/skills/ast-outline/SKILL.md"))
+                .unwrap();
+        assert!(contents.starts_with("---\n"));
+        assert!(contents.contains("name: ast-outline"));
+        assert!(contents.contains("user-invocable: true"));
+        assert!(contents.contains("## Prefer `ast-outline` over full reads"));
+    }
+
+    #[test]
+    fn install_skills_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_skills(&scope, &opts).unwrap();
+        let change = ClaudeCode.install_skills(&scope, &opts).unwrap();
+        assert!(matches!(change, Change::Skipped { .. }));
+    }
+
+    #[test]
+    fn install_skills_overwrites_when_content_differs() {
+        let dir = TempDir::new().unwrap();
+        let skill_path = dir.path().join(".claude/skills/ast-outline/SKILL.md");
+        std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
+        std::fs::write(&skill_path, "---\nname: ast-outline\n---\nold body\n").unwrap();
+        let scope = local_scope(&dir);
+        let change = ClaudeCode
+            .install_skills(&scope, &InstallOpts::default())
+            .unwrap();
+        assert!(matches!(change, Change::Updated(_)));
+        let contents = std::fs::read_to_string(&skill_path).unwrap();
+        assert!(contents.contains("Prefer `ast-outline`"));
+        assert!(!contents.contains("old body"));
+    }
+
+    #[test]
+    fn install_skills_dry_run_does_not_write() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts { dry_run: true, ..Default::default() };
+        ClaudeCode.install_skills(&scope, &opts).unwrap();
+        assert!(!dir.path().join(".claude/skills/ast-outline/SKILL.md").exists());
+    }
+
+    #[test]
+    fn uninstall_removes_mcp_entry_keeps_other_servers() {
+        let dir = TempDir::new().unwrap();
+        let mcp_path = dir.path().join(".mcp.json");
+        std::fs::write(
+            &mcp_path,
+            r#"{"mcpServers":{"other":{"command":"x","args":[]}}}"#,
+        )
+        .unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_mcp(&scope, &opts).unwrap();
+        ClaudeCode.uninstall(&scope, &opts).unwrap();
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert!(v["mcpServers"].get("ast-outline").is_none());
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
+    }
+
+    #[test]
+    fn uninstall_removes_skills_file_and_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_skills(&scope, &opts).unwrap();
+        let skill_dir = dir.path().join(".claude/skills/ast-outline");
+        assert!(skill_dir.join("SKILL.md").exists());
+        ClaudeCode.uninstall(&scope, &opts).unwrap();
+        assert!(!skill_dir.join("SKILL.md").exists());
+        assert!(!skill_dir.exists()); // empty parent removed
+        // .claude/skills/ stays intact (might be host to other skills).
+        assert!(dir.path().join(".claude/skills").exists());
+    }
+
+    #[test]
+    fn uninstall_keeps_skills_dir_when_other_skills_present() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_skills(&scope, &opts).unwrap();
+        // Drop a sibling skill in the same parent — but ast-outline is in its
+        // own subdir, so this verifies the parent .claude/skills/ stays.
+        std::fs::create_dir_all(dir.path().join(".claude/skills/other")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/skills/other/SKILL.md"),
+            "---\nname: other\n---\nbody\n",
+        )
+        .unwrap();
+        ClaudeCode.uninstall(&scope, &opts).unwrap();
+        assert!(dir.path().join(".claude/skills/other/SKILL.md").exists());
+    }
+
+    #[test]
+    fn uninstall_skips_user_replaced_skill_file() {
+        let dir = TempDir::new().unwrap();
+        let skill_path = dir.path().join(".claude/skills/ast-outline/SKILL.md");
+        std::fs::create_dir_all(skill_path.parent().unwrap()).unwrap();
+        // User completely replaced our file with their own content (no
+        // ast-outline marker). Uninstall must NOT delete it.
+        std::fs::write(&skill_path, "---\nname: my-skill\n---\nmine\n").unwrap();
+        let scope = local_scope(&dir);
+        ClaudeCode
+            .uninstall(&scope, &InstallOpts::default())
+            .unwrap();
+        assert!(skill_path.exists());
+    }
+
+    #[test]
+    fn status_reports_mcp_and_skills_flags() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let s0 = ClaudeCode.status(&scope);
+        assert!(!s0.mcp_installed);
+        assert!(!s0.skills_installed);
+        ClaudeCode
+            .install_mcp(&scope, &InstallOpts::default())
+            .unwrap();
+        ClaudeCode
+            .install_skills(&scope, &InstallOpts::default())
+            .unwrap();
+        let s1 = ClaudeCode.status(&scope);
+        assert!(s1.mcp_installed);
+        assert!(s1.skills_installed);
     }
 }

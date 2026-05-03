@@ -1,8 +1,8 @@
 class AstOutline < Formula
   desc "Fast, AST-based structural outline for source files"
   homepage "https://github.com/aeroxy/ast-outline"
-  url "https://github.com/aeroxy/ast-outline/releases/download/0.4.2/ast-outline-macos-arm64.zip"
-  sha256 "4e5c02528a4f7f3e32e44745c1c5078b396931e972c70b8242710e310cd64651"
+  url "https://github.com/aeroxy/ast-outline/releases/download/0.5.0/ast-outline-macos-arm64.zip"
+  sha256 "f86112229eb79ef820d8c12f14c395ace2d2bc37502f7eb15bcc6dafa3ce1e53"
   license "MIT"
 
   def install
@@ -10,7 +10,6 @@ class AstOutline < Formula
   end
 
   test do
-    # Run the help command to ensure the binary is functional
-    assert_match "Usage: ast-outline", shell_output("#{bin}/ast-outline --help")
+    assert_match version.to_s, shell_output("#{bin}/ast-outline --version")
   end
 end

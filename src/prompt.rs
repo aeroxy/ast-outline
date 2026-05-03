@@ -47,3 +47,13 @@ Stop at the step that answers the question:
 
 Fall back to a full read only when you need context beyond the body `show` returned. If the outline header contains `# WARNING: N parse errors`, the outline for that file is partial — read the source directly for the affected region.
 "#;
+
+/// YAML frontmatter for the Claude Code skill file. Concatenated with
+/// `AGENT_PROMPT` at install time to produce `SKILL.md`. Description is
+/// what Claude Code uses for skill discovery / routing — keep it
+/// action-oriented and accurate.
+pub const SKILL_FRONTMATTER: &str = "---\nname: ast-outline\ndescription: Fast AST-based structural outline for source code. Use to explore unfamiliar directories, list a file's symbols without reading bodies, jump to a specific function/class, find subclasses or implementations, search a repo by symbol or behaviour, or extract a package's true public API. Prefer this over reading whole files when you only need shape.\nuser-invocable: true\n---\n\n";
+
+pub fn agent_skill_md() -> String {
+    format!("{}{}", SKILL_FRONTMATTER, AGENT_PROMPT)
+}

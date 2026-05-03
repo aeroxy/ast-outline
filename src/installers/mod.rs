@@ -2,6 +2,8 @@ pub mod paths;
 pub mod io;
 pub mod marker_block;
 pub mod json_hook;
+pub mod json_object;
+pub mod toml_object;
 pub mod common;
 pub mod claude_code;
 pub mod gemini;
@@ -52,11 +54,13 @@ pub struct Detection {
     pub present: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Status {
     pub prompt_installed: bool,
     pub prompt_version: Option<String>,
     pub hook_installed: bool,
+    pub mcp_installed: bool,
+    pub skills_installed: bool,
 }
 
 pub trait Installer: Sync + Send {
@@ -66,6 +70,12 @@ pub trait Installer: Sync + Send {
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String>;
     fn install_subagents(&self, _scope: &Scope, _opts: &InstallOpts) -> Result<Vec<Change>, String> {
         Ok(Vec::new())
+    }
+    fn install_mcp(&self, _scope: &Scope, _opts: &InstallOpts) -> Result<Change, String> {
+        Ok(Change::NotApplicable)
+    }
+    fn install_skills(&self, _scope: &Scope, _opts: &InstallOpts) -> Result<Change, String> {
+        Ok(Change::NotApplicable)
     }
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String>;
     fn status(&self, scope: &Scope) -> Status;

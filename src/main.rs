@@ -115,6 +115,14 @@ enum Commands {
         dry_run: bool,
         #[arg(long)]
         force: bool,
+        /// Install ast-outline as an MCP server entry instead of the CLAUDE.md prompt.
+        /// Combine with `--skills` to install both.
+        #[arg(long)]
+        mcp: bool,
+        /// Install ast-outline as a Claude Code skill instead of the CLAUDE.md prompt.
+        /// Combine with `--mcp` to install both.
+        #[arg(long)]
+        skills: bool,
     },
     /// Remove ast-outline from a coding-agent CLI
     Uninstall {
@@ -491,6 +499,8 @@ fn main() {
                 min_lines,
                 dry_run,
                 force,
+                mcp,
+                skills,
             } => {
                 let scope = resolve_scope(*local, *global);
                 let opts = installers::InstallOpts {
@@ -499,7 +509,7 @@ fn main() {
                     dry_run: *dry_run,
                     force: *force,
                 };
-                let exit = run_install(target.as_deref(), *all, &scope, &opts);
+                let exit = run_install(target.as_deref(), *all, *mcp, *skills, &scope, &opts);
                 std::process::exit(exit);
             }
             Commands::Uninstall {
@@ -693,6 +703,8 @@ fn resolve_scope(local: bool, _global: bool) -> installers::Scope {
 fn run_install(
     target: Option<&str>,
     all: bool,
+    mcp: bool,
+    skills: bool,
     scope: &installers::Scope,
     opts: &installers::InstallOpts,
 ) -> i32 {
@@ -719,44 +731,15 @@ fn run_install(
         return 2;
     };
 
+    let exclusive_mode = mcp || skills;
     let mut any_installed = false;
     let mut any_failed = false;
     for inst in chosen {
         let label = inst.name();
-        match inst.install_prompt(scope, opts) {
-            Ok(c) => {
-                print_change(label, "prompt", &c);
-                if !matches!(
-                    c,
-                    installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                ) {
-                    any_installed = true;
-                }
-            }
-            Err(e) => {
-                eprintln!("{}: prompt: {}", label, e);
-                any_failed = true;
-            }
-        }
-        match inst.install_hook(scope, opts) {
-            Ok(c) => {
-                print_change(label, "hook", &c);
-                if !matches!(
-                    c,
-                    installers::Change::Skipped { .. } | installers::Change::NotApplicable
-                ) {
-                    any_installed = true;
-                }
-            }
-            Err(e) => {
-                eprintln!("{}: hook: {}", label, e);
-                any_failed = true;
-            }
-        }
-        match inst.install_subagents(scope, opts) {
-            Ok(changes) => {
-                for c in &changes {
-                    print_change(label, "subagent", c);
+        if !exclusive_mode {
+            match inst.install_prompt(scope, opts) {
+                Ok(c) => {
+                    print_change(label, "prompt", &c);
                     if !matches!(
                         c,
                         installers::Change::Skipped { .. } | installers::Change::NotApplicable
@@ -764,10 +747,77 @@ fn run_install(
                         any_installed = true;
                     }
                 }
+                Err(e) => {
+                    eprintln!("{}: prompt: {}", label, e);
+                    any_failed = true;
+                }
             }
-            Err(e) => {
-                eprintln!("{}: subagent: {}", label, e);
-                any_failed = true;
+            match inst.install_hook(scope, opts) {
+                Ok(c) => {
+                    print_change(label, "hook", &c);
+                    if !matches!(
+                        c,
+                        installers::Change::Skipped { .. } | installers::Change::NotApplicable
+                    ) {
+                        any_installed = true;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}: hook: {}", label, e);
+                    any_failed = true;
+                }
+            }
+            match inst.install_subagents(scope, opts) {
+                Ok(changes) => {
+                    for c in &changes {
+                        print_change(label, "subagent", c);
+                        if !matches!(
+                            c,
+                            installers::Change::Skipped { .. } | installers::Change::NotApplicable
+                        ) {
+                            any_installed = true;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}: subagent: {}", label, e);
+                    any_failed = true;
+                }
+            }
+        } else {
+            if mcp {
+                match inst.install_mcp(scope, opts) {
+                    Ok(c) => {
+                        print_change(label, "mcp", &c);
+                        if !matches!(
+                            c,
+                            installers::Change::Skipped { .. } | installers::Change::NotApplicable
+                        ) {
+                            any_installed = true;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: mcp: {}", label, e);
+                        any_failed = true;
+                    }
+                }
+            }
+            if skills {
+                match inst.install_skills(scope, opts) {
+                    Ok(c) => {
+                        print_change(label, "skills", &c);
+                        if !matches!(
+                            c,
+                            installers::Change::Skipped { .. } | installers::Change::NotApplicable
+                        ) {
+                            any_installed = true;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{}: skills: {}", label, e);
+                        any_failed = true;
+                    }
+                }
             }
         }
     }
@@ -840,7 +890,16 @@ fn run_status(scope: &installers::Scope) {
             "prompt -".to_string()
         };
         let hook = if s.hook_installed { "hook ✓" } else { "hook -" };
-        println!("{:<14} {:<14} {}", inst.name(), prompt, hook);
+        let mcp = if s.mcp_installed { "mcp ✓" } else { "mcp -" };
+        let skills = if s.skills_installed { "skills ✓" } else { "skills -" };
+        println!(
+            "{:<14} {:<14} {:<8} {:<8} {}",
+            inst.name(),
+            prompt,
+            hook,
+            mcp,
+            skills
+        );
     }
 }
 

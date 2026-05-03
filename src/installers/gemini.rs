@@ -4,13 +4,15 @@ use serde_json::{json, Value};
 
 use super::json_hook::MARKER;
 use super::paths;
-use super::{common, Change, Detection, InstallOpts, Installer, Scope, Status};
+use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
 use crate::prompt::AGENT_PROMPT;
 
 pub struct Gemini;
 
 const HOOK_PATH: &[&str] = &["hooks", "BeforeTool"];
 const HOOK_NAME: &str = "ast-outline-read-interceptor";
+const MCP_KEY_PATH: &[&str] = &["mcpServers"];
+const MCP_SERVER_NAME: &str = "ast-outline";
 
 impl Gemini {
     pub(crate) fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
@@ -24,6 +26,9 @@ impl Gemini {
             Scope::Local(root) => Ok(root.join(".gemini/settings.json")),
             Scope::Global => paths::under_home(".gemini/settings.json"),
         }
+    }
+    fn mcp_entry(&self) -> Value {
+        json!({ "command": "ast-outline", "args": ["mcp"] })
     }
     pub(crate) fn hook_entry(&self, opts: &InstallOpts) -> Value {
         let mut cmd = format!(
@@ -87,6 +92,16 @@ impl Installer for Gemini {
         )
     }
 
+    fn install_mcp(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String> {
+        common::install_json_object_in(
+            &self.settings_path(scope)?,
+            MCP_KEY_PATH,
+            MCP_SERVER_NAME,
+            self.mcp_entry(),
+            opts,
+        )
+    }
+
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {
         let mut changes = Vec::new();
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
@@ -97,16 +112,33 @@ impl Installer for Gemini {
         {
             changes.push(c);
         }
+        if let Some(c) = common::uninstall_json_object_in(
+            &self.settings_path(scope)?,
+            MCP_KEY_PATH,
+            MCP_SERVER_NAME,
+            opts,
+        )? {
+            changes.push(c);
+        }
         Ok(changes)
     }
 
     fn status(&self, scope: &Scope) -> Status {
-        common::status_for(
+        let mut s = common::status_for(
             self.prompt_path(scope).ok().as_deref(),
             self.settings_path(scope).ok().as_deref(),
             HOOK_PATH,
             matches_entry,
-        )
+        );
+        if let Ok(sp) = self.settings_path(scope) {
+            if let Ok(Some(contents)) = super::io::read_optional(&sp) {
+                if let Ok(root) = serde_json::from_str::<Value>(&contents) {
+                    s.mcp_installed =
+                        json_object::is_installed(&root, MCP_KEY_PATH, MCP_SERVER_NAME);
+                }
+            }
+        }
+        s
     }
 }
 
@@ -131,5 +163,36 @@ mod tests {
         assert!(settings.contains("--protocol gemini"));
         assert!(settings.contains("\"matcher\": \"read_file\""));
         assert!(settings.contains("BeforeTool"));
+    }
+
+    #[test]
+    fn install_mcp_writes_into_gemini_settings_alongside_hook() {
+        let dir = TempDir::new().unwrap();
+        let scope = Scope::Local(dir.path().to_path_buf());
+        let opts = InstallOpts::default();
+        Gemini.install_hook(&scope, &opts).unwrap();
+        Gemini.install_mcp(&scope, &opts).unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".gemini/settings.json")).unwrap(),
+        )
+        .unwrap();
+        // Both the hook and the MCP entry must coexist in the same file.
+        assert_eq!(v["mcpServers"]["ast-outline"]["command"], "ast-outline");
+        assert!(v["hooks"]["BeforeTool"].is_array());
+    }
+
+    #[test]
+    fn uninstall_removes_mcp_entry_keeps_other_servers() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join(".gemini/settings.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"mcpServers":{"docs":{"command":"x","args":[]}}}"#).unwrap();
+        let scope = Scope::Local(dir.path().to_path_buf());
+        let opts = InstallOpts::default();
+        Gemini.install_mcp(&scope, &opts).unwrap();
+        Gemini.uninstall(&scope, &opts).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(v["mcpServers"].get("ast-outline").is_none());
+        assert_eq!(v["mcpServers"]["docs"]["command"], "x");
     }
 }

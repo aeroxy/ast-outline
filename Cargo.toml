@@ -1,6 +1,6 @@
 [package]
 name = "ast-outline"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 description = "Fast, AST-based structural outline for source files. Built for LLM coding agents and humans."
 authors = ["Aero <aero.windwalker@gmail.com>"]
@@ -40,6 +40,7 @@ regex = "1"
 bincode = { version = "2", features = ["serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 fs2 = "0.4"
+toml_edit = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
