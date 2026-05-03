@@ -219,6 +219,41 @@ a tool-call hook that intercepts `Read` on supported source files when
 they exceed `--min-lines` (default 200) and substitutes the outline.
 The other targets receive the prompt only.
 
+### Claude Code subagent shadowing
+
+Claude Code has isolated subagents (Explore, Plan, general-purpose) that run in
+their own context and cannot see the main `CLAUDE.md`. `ast-outline install` 
+automatically shadows these subagents with `.claude/agents/<Name>.md` files 
+containing the full ast-outline prompt.
+
+When you run `ast-outline install --target claude-code`, you get:
+- `CLAUDE.md` — main agent prompt (global or local per-repo)
+- `.claude/settings.json` — `Read` tool hook
+- `.claude/agents/Explore.md` — Explore subagent with the prompt injected
+
+This solves the "why doesn't my subagent use ast-outline?" problem — subagents
+now get the prompt automatically. Legacy manual `~/.claude/agents/Explore.md` files
+are wrapped in marker blocks in-place (non-breaking).
+
+### Skills for manual installation
+
+A `skills/` folder is included in the repo for users who prefer manual setup:
+
+```bash
+# Clone or download the repo
+git clone https://github.com/aeroxy/ast-outline.git
+cd ast-outline
+
+# Copy the skill to your user skills directory
+cp -r skills/ast-outline ~/.claude/skills/ast-outline
+
+# Then manually invoke from Claude Code
+/ast-outline
+```
+
+This works alongside `ast-outline install` — the skill definition tells Claude Code
+how to invoke the `ast-outline` CLI with proper tool schemas and documentation.
+
 Manual install via `ast-outline prompt` (e.g. project-level):
 
 ```bash

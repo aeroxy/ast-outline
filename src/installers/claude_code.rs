@@ -11,6 +11,11 @@ pub struct ClaudeCode;
 
 const HOOK_PATH: &[&str] = &["hooks", "PreToolUse"];
 
+/// Built-in Claude Code subagents that run in their own context and never see
+/// `CLAUDE.md`. Shadowing them with `.claude/agents/<Name>.md` is the official
+/// way to push the ast-outline prompt into their system prompt.
+const SHADOWED_SUBAGENTS: &[&str] = &["Explore"];
+
 impl ClaudeCode {
     fn prompt_path(&self, scope: &Scope) -> Result<PathBuf, String> {
         match scope {
@@ -22,6 +27,12 @@ impl ClaudeCode {
         match scope {
             Scope::Local(root) => Ok(root.join(".claude/settings.json")),
             Scope::Global => paths::under_home(".claude/settings.json"),
+        }
+    }
+    fn subagent_path(&self, scope: &Scope, name: &str) -> Result<PathBuf, String> {
+        match scope {
+            Scope::Local(root) => Ok(root.join(".claude/agents").join(format!("{}.md", name))),
+            Scope::Global => paths::under_home(&format!(".claude/agents/{}.md", name)),
         }
     }
     fn hook_command(&self, opts: &InstallOpts) -> String {
@@ -84,6 +95,15 @@ impl Installer for ClaudeCode {
         )
     }
 
+    fn install_subagents(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {
+        let mut changes = Vec::with_capacity(SHADOWED_SUBAGENTS.len());
+        for name in SHADOWED_SUBAGENTS {
+            let path = self.subagent_path(scope, name)?;
+            changes.push(common::install_prompt_in(&path, AGENT_PROMPT, opts)?);
+        }
+        Ok(changes)
+    }
+
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String> {
         let mut changes = Vec::new();
         if let Some(c) = common::uninstall_prompt_in(&self.prompt_path(scope)?, opts)? {
@@ -93,6 +113,11 @@ impl Installer for ClaudeCode {
             common::uninstall_json_hook_in(&self.settings_path(scope)?, HOOK_PATH, matches_entry, opts)?
         {
             changes.push(c);
+        }
+        for name in SHADOWED_SUBAGENTS {
+            if let Some(c) = common::uninstall_prompt_in(&self.subagent_path(scope, name)?, opts)? {
+                changes.push(c);
+            }
         }
         Ok(changes)
     }
@@ -221,5 +246,104 @@ mod tests {
         let opts = InstallOpts { dry_run: true, ..Default::default() };
         ClaudeCode.install_prompt(&scope, &opts).unwrap();
         assert!(!dir.path().join("CLAUDE.md").exists());
+    }
+
+    #[test]
+    fn install_subagents_creates_explore_md_with_marker_block() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let changes = ClaudeCode
+            .install_subagents(&scope, &InstallOpts::default())
+            .unwrap();
+        assert_eq!(changes.len(), SHADOWED_SUBAGENTS.len());
+        assert!(matches!(changes[0], Change::Created(_)));
+        let path = dir.path().join(".claude/agents/Explore.md");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("<!-- ast-outline:begin"));
+        assert!(contents.contains("ast-outline"));
+    }
+
+    #[test]
+    fn install_subagents_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_subagents(&scope, &opts).unwrap();
+        let path = dir.path().join(".claude/agents/Explore.md");
+        let after_first = std::fs::read_to_string(&path).unwrap();
+        let changes = ClaudeCode.install_subagents(&scope, &opts).unwrap();
+        assert!(matches!(changes[0], Change::Skipped { .. }));
+        let after_second = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn install_subagents_wraps_legacy_explore_md_in_place() {
+        // Simulates a user who manually created ~/.claude/agents/Explore.md by
+        // pasting `ast-outline prompt` output before this installer existed.
+        let dir = TempDir::new().unwrap();
+        let agent_path = dir.path().join(".claude/agents/Explore.md");
+        std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        std::fs::write(&agent_path, AGENT_PROMPT).unwrap();
+        let scope = local_scope(&dir);
+        let changes = ClaudeCode
+            .install_subagents(&scope, &InstallOpts::default())
+            .unwrap();
+        assert!(matches!(changes[0], Change::Updated(_)));
+        let contents = std::fs::read_to_string(&agent_path).unwrap();
+        assert!(contents.contains("<!-- ast-outline:begin"));
+        // Body is wrapped exactly once — the legacy bare snippet is gone.
+        assert_eq!(contents.matches("## Prefer `ast-outline` over full reads").count(), 1);
+    }
+
+    #[test]
+    fn install_subagents_appends_to_user_customized_file() {
+        let dir = TempDir::new().unwrap();
+        let agent_path = dir.path().join(".claude/agents/Explore.md");
+        std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        let custom = "---\nname: Explore\ntools: Read, Grep\n---\nUser prompt body.\n";
+        std::fs::write(&agent_path, custom).unwrap();
+        let scope = local_scope(&dir);
+        ClaudeCode
+            .install_subagents(&scope, &InstallOpts::default())
+            .unwrap();
+        let contents = std::fs::read_to_string(&agent_path).unwrap();
+        assert!(contents.starts_with(custom));
+        assert!(contents.contains("<!-- ast-outline:begin"));
+    }
+
+    #[test]
+    fn uninstall_removes_subagent_block_and_keeps_user_content() {
+        let dir = TempDir::new().unwrap();
+        let agent_path = dir.path().join(".claude/agents/Explore.md");
+        std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        let custom = "---\nname: Explore\n---\nKeep me.\n";
+        std::fs::write(&agent_path, custom).unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        ClaudeCode.install_subagents(&scope, &opts).unwrap();
+        let removed = ClaudeCode.uninstall(&scope, &opts).unwrap();
+        assert!(removed.iter().any(|c| matches!(c, Change::Removed(p) if p.ends_with("Explore.md"))));
+        let contents = std::fs::read_to_string(&agent_path).unwrap();
+        assert!(!contents.contains("ast-outline:begin"));
+        assert!(contents.contains("Keep me."));
+    }
+
+    #[test]
+    fn uninstall_subagent_noop_when_file_absent() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts::default();
+        let removed = ClaudeCode.uninstall(&scope, &opts).unwrap();
+        assert!(removed.iter().all(|c| !matches!(c, Change::Removed(p) if p.ends_with("Explore.md"))));
+    }
+
+    #[test]
+    fn install_subagents_dry_run_does_not_write() {
+        let dir = TempDir::new().unwrap();
+        let scope = local_scope(&dir);
+        let opts = InstallOpts { dry_run: true, ..Default::default() };
+        ClaudeCode.install_subagents(&scope, &opts).unwrap();
+        assert!(!dir.path().join(".claude/agents/Explore.md").exists());
     }
 }

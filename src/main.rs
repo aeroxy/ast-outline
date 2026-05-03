@@ -753,6 +753,23 @@ fn run_install(
                 any_failed = true;
             }
         }
+        match inst.install_subagents(scope, opts) {
+            Ok(changes) => {
+                for c in &changes {
+                    print_change(label, "subagent", c);
+                    if !matches!(
+                        c,
+                        installers::Change::Skipped { .. } | installers::Change::NotApplicable
+                    ) {
+                        any_installed = true;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{}: subagent: {}", label, e);
+                any_failed = true;
+            }
+        }
     }
 
     if any_failed && any_installed {

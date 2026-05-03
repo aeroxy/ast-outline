@@ -64,6 +64,9 @@ pub trait Installer: Sync + Send {
     fn detect(&self, scope: &Scope) -> Detection;
     fn install_prompt(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String>;
     fn install_hook(&self, scope: &Scope, opts: &InstallOpts) -> Result<Change, String>;
+    fn install_subagents(&self, _scope: &Scope, _opts: &InstallOpts) -> Result<Vec<Change>, String> {
+        Ok(Vec::new())
+    }
     fn uninstall(&self, scope: &Scope, opts: &InstallOpts) -> Result<Vec<Change>, String>;
     fn status(&self, scope: &Scope) -> Status;
 }
