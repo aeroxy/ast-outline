@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 mod core;
+mod deps;
 mod file_filter;
 mod prompt;
 mod installers;
@@ -21,34 +22,36 @@ use crate::core::{DigestOptions, OutlineOptions, ParseResult};
 #[command(about = "Fast, AST-based structural outline for source files", long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Commands>,
-
-    /// Files or directories to outline (default command)
-    #[arg(num_args = 1..)]
-    paths: Vec<PathBuf>,
-
-    #[arg(long)]
-    no_private: bool,
-    #[arg(long)]
-    no_fields: bool,
-    #[arg(long)]
-    no_docs: bool,
-    #[arg(long)]
-    no_attrs: bool,
-    #[arg(long)]
-    no_lines: bool,
-    #[arg(long)]
-    glob: Option<String>,
-    /// Emit output as JSON instead of text
-    #[arg(long)]
-    json: bool,
-    /// With --json: emit compact (single-line) JSON instead of pretty-printed
-    #[arg(long)]
-    compact: bool,
+    command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Outline files or directories — signatures with line ranges, no method bodies.
+    Outline {
+        /// Files or directories to outline.
+        #[arg(num_args = 1..)]
+        paths: Vec<PathBuf>,
+
+        #[arg(long)]
+        no_private: bool,
+        #[arg(long)]
+        no_fields: bool,
+        #[arg(long)]
+        no_docs: bool,
+        #[arg(long)]
+        no_attrs: bool,
+        #[arg(long)]
+        no_lines: bool,
+        #[arg(long)]
+        glob: Option<String>,
+        /// Emit output as JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// With --json: emit compact (single-line) JSON instead of pretty-printed
+        #[arg(long)]
+        compact: bool,
+    },
     /// Extract source of a symbol
     Show {
         path: PathBuf,
@@ -234,6 +237,63 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
+    /// Forward import-graph traversal: what does this file import (transitively)?
+    Deps {
+        file: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        /// Include unresolved imports (the `external` bucket) in output.
+        #[arg(long)]
+        external: bool,
+        /// Force a fresh dep-graph build.
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Reverse import-graph: who imports this file (transitively)?
+    ReverseDeps {
+        file: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Find import cycles via Tarjan SCC.
+    Cycles {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long, default_value_t = 2)]
+        min_size: usize,
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Emit the dep graph (text, JSON, DOT, or DSM matrix).
+    Graph {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// One of: text|json|dot|dsm.
+        #[arg(long, default_value = "text")]
+        format: String,
+        #[arg(long)]
+        include_external: bool,
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        compact: bool,
+    },
     /// Build, refresh, or inspect the per-repo search index
     Index {
         /// Repository root (default: ".")
@@ -341,10 +401,63 @@ pub(crate) fn walk_and_parse(paths: &[PathBuf], glob_str: Option<&str>) -> Vec<P
 }
 
 fn main() {
-    let cli = Cli::parse();
+    use clap::CommandFactory;
+    use clap::error::ErrorKind;
 
-    if let Some(cmd) = &cli.command {
-        match cmd {
+    // Agent-friendly arg handling: instead of dying on a typo or unknown
+    // flag, print the help text so the calling agent can self-correct
+    // without a separate `--help` round-trip. `--help` / `--version` keep
+    // their normal exit-0 behaviour; everything else prints help to stdout
+    // and exits 0 too (agents see "output" rather than "error").
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => match e.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                e.exit();
+            }
+            _ => {
+                let mut cmd = Cli::command();
+                let _ = cmd.print_help();
+                println!();
+                println!("# note: could not parse args ({}). Showing help instead.", e.kind());
+                std::process::exit(0);
+            }
+        },
+    };
+
+    match &cli.command {
+            Commands::Outline {
+                paths,
+                no_private,
+                no_fields,
+                no_docs,
+                no_attrs,
+                no_lines,
+                glob,
+                json,
+                compact,
+            } => {
+                let results = walk_and_parse(paths, glob.as_deref());
+                let opts = OutlineOptions {
+                    include_private: !(*no_private),
+                    include_fields: !(*no_fields),
+                    include_docs: !(*no_docs),
+                    include_attributes: !(*no_attrs),
+                    include_line_numbers: !(*no_lines),
+                    max_doc_lines: 6,
+                    max_members: None,
+                };
+                let json_on = *json;
+                let pretty = !(*compact);
+                if json_on {
+                    println!("{}", crate::core::render_json_outline(&results, &opts, pretty));
+                } else {
+                    for res in results {
+                        println!("{}", crate::core::render_outline(&res, &opts));
+                        println!();
+                    }
+                }
+            }
             Commands::Show {
                 path,
                 symbol,
@@ -357,7 +470,7 @@ fn main() {
                 } else if let Some(res) = parse_file(path) {
                     let mut symbols = vec![symbol.as_str()];
                     symbols.extend(others.iter().map(|s| s.as_str()));
-                    if *json || cli.json {
+                    if *json {
                         let mut seen = std::collections::HashSet::new();
                         let mut all_matches = Vec::new();
                         for sym in &symbols {
@@ -370,7 +483,7 @@ fn main() {
                         }
                         println!(
                             "{}",
-                            crate::core::render_json_show(&res, &all_matches, !(*compact || cli.compact))
+                            crate::core::render_json_show(&res, &all_matches, !(*compact))
                         );
                         if all_matches.is_empty() {
                             // JSON consumers see [] in the payload; humans/agents
@@ -422,7 +535,7 @@ fn main() {
                 compact,
             } => {
                 let results = walk_and_parse(paths, None);
-                if *json || cli.json {
+                if *json {
                     let opts = OutlineOptions {
                         include_private: *include_private,
                         include_fields: *include_fields,
@@ -434,7 +547,7 @@ fn main() {
                     };
                     println!(
                         "{}",
-                        crate::core::render_json_outline(&results, &opts, !(*compact || cli.compact))
+                        crate::core::render_json_outline(&results, &opts, !(*compact))
                     );
                 } else {
                     let opts = DigestOptions {
@@ -461,14 +574,14 @@ fn main() {
                 let results = walk_and_parse(paths, None);
                 let transitive = !direct;
                 let matches = crate::core::find_implementations(&results, target, transitive);
-                if *json || cli.json {
+                if *json {
                     println!(
                         "{}",
                         crate::core::render_json_implements(
                             target,
                             &matches,
                             transitive,
-                            !(*compact || cli.compact),
+                            !(*compact),
                         )
                     );
                 } else {
@@ -565,8 +678,8 @@ fn main() {
                     *top_k,
                     *alpha,
                     languages.clone(),
-                    *json || cli.json,
-                    !(*compact || cli.compact),
+                    *json,
+                    !(*compact),
                 );
                 std::process::exit(exit);
             }
@@ -599,8 +712,8 @@ fn main() {
                     line_num,
                     path,
                     *top_k,
-                    *json || cli.json,
-                    !(*compact || cli.compact),
+                    *json,
+                    !(*compact),
                 );
                 std::process::exit(exit);
             }
@@ -624,8 +737,8 @@ fn main() {
                     },
                     None => None,
                 };
-                let json_on = *json || cli.json;
-                let pretty = !(*compact || cli.compact);
+                let json_on = *json;
+                let pretty = !(*compact);
                 let output = if json_on {
                     crate::surface::OutputMode::Json { compact: !pretty }
                 } else if *tree {
@@ -651,6 +764,73 @@ fn main() {
                     }
                 }
             }
+            Commands::Deps {
+                file,
+                depth,
+                external: _,
+                rebuild,
+                json,
+                compact,
+            } => {
+                let exit = crate::deps::cli::run_deps(
+                    file,
+                    *depth,
+                    *json,
+                    !(*compact),
+                    *rebuild,
+                );
+                std::process::exit(exit);
+            }
+            Commands::ReverseDeps {
+                file,
+                depth,
+                limit,
+                rebuild,
+                json,
+                compact,
+            } => {
+                let exit = crate::deps::cli::run_reverse_deps(
+                    file,
+                    *depth,
+                    *limit,
+                    *json,
+                    !(*compact),
+                    *rebuild,
+                );
+                std::process::exit(exit);
+            }
+            Commands::Cycles {
+                path,
+                min_size,
+                rebuild,
+                json,
+                compact,
+            } => {
+                let exit = crate::deps::cli::run_cycles(
+                    path,
+                    *min_size,
+                    *json,
+                    !(*compact),
+                    *rebuild,
+                );
+                std::process::exit(exit);
+            }
+            Commands::Graph {
+                path,
+                format,
+                include_external,
+                rebuild,
+                compact,
+            } => {
+                let exit = crate::deps::cli::run_graph(
+                    path,
+                    format,
+                    *include_external,
+                    !(*compact),
+                    *rebuild,
+                );
+                std::process::exit(exit);
+            }
             Commands::Index {
                 path,
                 rebuild,
@@ -662,33 +842,11 @@ fn main() {
                     path,
                     *rebuild,
                     *stats,
-                    *json || cli.json,
-                    !(*compact || cli.compact),
+                    *json,
+                    !(*compact),
                 );
                 std::process::exit(exit);
             }
-        }
-    } else if !cli.paths.is_empty() {
-        let results = walk_and_parse(&cli.paths, cli.glob.as_deref());
-        let opts = OutlineOptions {
-            include_private: !cli.no_private,
-            include_fields: !cli.no_fields,
-            include_docs: !cli.no_docs,
-            include_attributes: !cli.no_attrs,
-            include_line_numbers: !cli.no_lines,
-            max_doc_lines: 6,
-            max_members: None,
-        };
-        if cli.json {
-            println!("{}", crate::core::render_json_outline(&results, &opts, !cli.compact));
-        } else {
-            for res in results {
-                println!("{}", crate::core::render_outline(&res, &opts));
-                println!();
-            }
-        }
-    } else {
-        println!("Please provide a path or command.");
     }
 }
 

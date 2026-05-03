@@ -1,10 +1,8 @@
 # ast-outline
 
-Fast, AST-based **structural outline** for source files — classes, methods,
-signatures with line numbers, but **no method bodies**. Built for LLM coding
-agents and humans who want to read the *shape* of a file before diving into the whole thing.
+Fast, AST-based **code-navigation toolkit** for source files — read the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, and search the repo by *symbol or behaviour*. Twelve subcommands, one binary, built for LLM coding agents and humans who'd rather not waste tokens reading every file just to understand a codebase.
 
-`ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and it utilizes `rayon` to parse your entire workspace concurrently in milliseconds. This project's `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline), while these three commands are similar, the Rust code itself was largely originated from a bigger code-agent project and uses `ast-grep` for parsing, not a direct port.
+`ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and uses [rayon](https://github.com/rayon-rs/rayon) to parse your entire workspace concurrently in milliseconds. The `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline). The Rust code itself originated from a larger code-agent project and is not a direct port.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
@@ -15,15 +13,15 @@ agents and humans who want to read the *shape* of a file before diving into the 
 **`ast-outline` exists to make LLM coding agents faster, cheaper, and smarter
 when navigating unfamiliar code.**
 
-Modern agentic coding tools explore codebases by reading files directly — not via embeddings or vector search. That approach is reliable but has a massive cost: on a 1000-line file, the agent pays for 1000 lines of tokens just to answer *"what methods exist here?"*.
+Modern agentic coding tools explore codebases by reading files directly. That's reliable but has a massive cost: on a 1000-line file, the agent pays for 1000 lines of tokens just to answer *"what methods exist here?"* — and reading is only one of several questions an agent has. *"Who imports this?"* *"What's the public API?"* *"Are there cycles?"* *"Where in the repo is the login flow?"* — each one historically required dozens of file reads or noisy `grep`s.
 
-`ast-outline` closes that gap. It's a **pre-reading layer**:
+`ast-outline` collapses each of those questions into a single command:
 
-1. **95% token saving.** An outline replaces a full file read when you only need structural understanding.
-2. **Faster exploration.** A whole module's public API fits on one screen.
-3. **Precise navigation.** Every declaration has a line range (`L42-58`). You go straight to the method body you need.
-4. **AST accuracy, not fuzzy match.** `implements` and `show` understand real syntax — no false positives from comments or strings like `grep`.
-5. **Zero infrastructure.** No index, no cache, no embeddings, no network. Live, always fresh, invisible to your repo.
+1. **Shape over bytes.** `outline` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
+2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
+3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/deps/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph --format dsm` renders a Design Structure Matrix that surfaces architectural inversions at a glance.
+4. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
+5. **Twelve native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-outline install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
 
 ### The workflow
 
@@ -40,15 +38,17 @@ Agent: grep "IDamageable" src/   # noisy, lots of false matches
 **With `ast-outline`:**
 
 ```
-Agent: ast-outline surface .                 # one-page true public API of the crate/package
-Agent: ast-outline digest src/Combat         # ~100 lines, whole module's structure
-Agent: ast-outline implements IDamageable    # precise list, no grep noise
-Agent: ast-outline search "damage handling"  # hybrid BM25 + dense semantic, ranked
-Agent: ast-outline show Player.cs TakeDamage # just the method body
+Agent: ast-outline surface .                  # one-page true public API of the crate/package
+Agent: ast-outline digest src/Combat          # ~100 lines, whole module's structure
+Agent: ast-outline implements IDamageable     # precise list, no grep noise
+Agent: ast-outline search "damage handling"   # hybrid BM25 + dense semantic, ranked
+Agent: ast-outline show Player.cs TakeDamage  # just the method body
+Agent: ast-outline reverse-deps Player.cs     # who imports this — blast radius before refactor
+Agent: ast-outline cycles src/                # find import cycles via Tarjan SCC
 ```
 
 Result: **same understanding, a fraction of the tokens, a fraction of the round-trips.**
-For "what does this package actually expose?" — historically the most expensive question, since the answer was "read every file" — `surface` resolves the re-export graph and gives you the answer directly, often replacing dozens of file reads with a single call.
+For "what does this package actually expose?" — historically the most expensive question, since the answer was "read every file" — `surface` resolves the re-export graph and gives you the answer directly, often replacing dozens of file reads with a single call. For "what would break if I change this file?" — `reverse-deps` gives you the impact set in one call instead of agent-grepping for usages.
 
 ---
 
@@ -142,11 +142,11 @@ Or add it as a dependency in your Nix flake:
 
 ```bash
 # Structural outline of one file
-ast-outline path/to/Player.rs
-ast-outline path/to/user_service.py
+ast-outline outline path/to/Player.rs
+ast-outline outline path/to/user_service.py
 
 # Outline a whole directory (recurses supported extensions in parallel)
-ast-outline src/
+ast-outline outline src/
 
 # Print the exact source of one specific method
 ast-outline show Player.cs TakeDamage
@@ -160,6 +160,12 @@ ast-outline surface --tree --include-chain mycrate/
 
 # Every class that inherits/implements a given type
 ast-outline implements IDamageable src/
+
+# Dependency graph: forward, reverse, cycles, full
+ast-outline deps src/auth.rs --depth 2  # what auth.rs imports (transitively)
+ast-outline reverse-deps src/auth.rs    # who imports auth.rs (refactor blast radius)
+ast-outline cycles                      # find import cycles via Tarjan SCC
+ast-outline graph . --format dsm        # Design Structure Matrix
 
 # Hybrid BM25 + dense semantic search (builds an index on first call)
 ast-outline search "how does login work"
@@ -177,7 +183,7 @@ ast-outline index --rebuild  # drop cache and rebuild
 ast-outline prompt >> AGENTS.md
 
 # Machine-readable JSON (stable schema, great for tooling)
-ast-outline src/player.rs --json
+ast-outline outline src/player.rs --json
 ast-outline digest src/ --json
 ast-outline show Player.cs TakeDamage --json
 ast-outline implements IDamageable src/ --json
@@ -313,11 +319,11 @@ servers, CI tooling, or any script that needs to consume the data
 programmatically.
 
 ```bash
-ast-outline src/player.rs --json            # per-file outline
+ast-outline outline src/player.rs --json    # per-file outline
 ast-outline digest src/ --json              # digest view
 ast-outline show Player.cs TakeDamage --json
 ast-outline implements IDamageable src/ --json
-ast-outline src/ --json --compact           # single-line (no pretty-print)
+ast-outline outline src/ --json --compact   # single-line (no pretty-print)
 ```
 
 Every JSON document includes a `schema` field that is bumped on breaking
@@ -354,6 +360,10 @@ changes, so downstream tooling can guard on it:
 | `ast-outline.show.v1` | `show --json` |
 | `ast-outline.implements.v1` | `implements --json` |
 | `ast-outline.surface.v1` | `surface --json` |
+| `ast-outline.deps.v1` | `deps --json` |
+| `ast-outline.reverse-deps.v1` | `reverse-deps --json` |
+| `ast-outline.cycles.v1` | `cycles --json` |
+| `ast-outline.graph.v1` | `graph --format json` |
 | `ast-outline.search.v1` | `search --json` |
 | `ast-outline.related.v1` | `find-related --json` |
 | `ast-outline.index-stats.v1` | `index --stats --json` |
@@ -370,16 +380,20 @@ as native tools — no shell parsing required:
 ast-outline mcp
 ```
 
-The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes eight
+The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes twelve
 tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
 |------|----------------|---------|
-| `outline`      | `ast-outline <paths>`                    | text, or `ast-outline.outline.v1` with `json: true` |
+| `outline`      | `ast-outline outline <paths>`            | text, or `ast-outline.outline.v1` with `json: true` |
 | `digest`       | `ast-outline digest <paths>`             | text, or `ast-outline.outline.v1` with `json: true` |
 | `show`         | `ast-outline show <path> <syms>`         | text, or `ast-outline.show.v1` with `json: true` |
 | `implements`   | `ast-outline implements <type> <paths>`  | text, or `ast-outline.implements.v1` with `json: true` |
 | `surface`      | `ast-outline surface [path]`             | text, or `ast-outline.surface.v1` with `json: true` |
+| `deps`         | `ast-outline deps <file>`                | text, or `ast-outline.deps.v1` with `json: true` |
+| `reverse_deps` | `ast-outline reverse-deps <file>`        | text, or `ast-outline.reverse-deps.v1` with `json: true` |
+| `cycles`       | `ast-outline cycles [path]`              | text, or `ast-outline.cycles.v1` with `json: true` |
+| `graph`        | `ast-outline graph [path]`               | text by default; `format: "json"|"dot"|"dsm"` for other shapes |
 | `search`       | `ast-outline search "<query>"`           | text, or `ast-outline.search.v1` with `json: true` |
 | `find_related` | `ast-outline find-related <file>:<line>` | text, or `ast-outline.related.v1` with `json: true` |
 | `index`        | `ast-outline index`                      | text, or `ast-outline.index-stats.v1` with `json: true` |
@@ -438,6 +452,34 @@ Subsequent calls walk the tree, compare `(mtime, size)` against `files.bin`, and
 The model is downloaded once (~64 MB) on first use to `~/.cache/ast-outline/models/`. It tries HuggingFace first, falls back to `hf-mirror.com` if blocked. **TLS verification is disabled by default** so corporate MITM proxies don't break setup; integrity is enforced via SHA-256 on every cached file. Set `AST_OUTLINE_TLS_STRICT=1` to enforce strict TLS.
 
 For more on what gets indexed (the five filter layers, `.ast-outline-ignore` syntax) see the "What gets walked" section above. For the security trade-offs around the TLS default, see the [network-security wiki page](https://github.com/aeroxy/ast-outline/blob/main/wiki/network-security.md) on GitHub.
+
+`find-related` quietly benefits from the dep graph too — when one is cached, results are reranked so files within depth 2 of the source (importer or importee) get a multiplicative boost. Disable with `--no-dep-boost`.
+
+---
+
+## Dependency graph
+
+`ast-outline deps`, `reverse-deps`, `cycles`, and `graph` build a file-level import graph for the project and answer different questions on it:
+
+```bash
+ast-outline deps src/auth.rs --depth 2          # what does auth.rs pull in?
+ast-outline reverse-deps src/auth.rs            # who imports auth.rs? (refactor blast radius)
+ast-outline cycles                              # find import cycles via Tarjan SCC (exit 3 if any)
+ast-outline graph . --format dsm                # Design Structure Matrix sorted by Lakos level
+ast-outline graph . --format dot | dot -Tpng    # GraphViz visualization
+```
+
+All four commands share one dep graph cached at `.ast-outline/deps/graph.bin`. First call builds it (~hundreds of ms for typical repos via the same `ignore`-respecting walk used by search); subsequent calls reuse it via mtime-based delta detection, with `--rebuild` to force a fresh build.
+
+Resolution is per-language but shares one suffix-index resolver:
+
+- **Rust**: `use crate::*` / `use super::*` / `mod foo;` (with `#[path]` attribute support).
+- **Python**: relative imports (`from .x import y`), `__init__.py` packages, bare `import a.b`.
+- **TypeScript / JavaScript**: relative paths with extension probing (`.ts → .tsx → .mts → .cts → .d.ts → .js → ... → .json`), `index.*` fallback, `tsconfig.json` `paths` aliases.
+- **Java / Kotlin / Scala / C#**: FQN suffix index built from each file's `package` / `namespace` declaration. Inner classes resolve via strip-and-retry.
+- **Go**: `go.mod` `module` prefix is stripped; `import "mymod/pkg/foo"` resolves to `pkg/foo/*.go` (directory-as-package).
+
+The four commands are also exposed as MCP tools for agents.
 
 ---
 

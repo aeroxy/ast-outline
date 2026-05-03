@@ -7,6 +7,11 @@ pub const JSON_SCHEMA_OUTLINE: &str = "ast-outline.outline.v1";
 pub const JSON_SCHEMA_SHOW: &str = "ast-outline.show.v1";
 pub const JSON_SCHEMA_IMPLEMENTS: &str = "ast-outline.implements.v1";
 pub const JSON_SCHEMA_SURFACE: &str = "ast-outline.surface.v1";
+pub const JSON_SCHEMA_DEPS: &str = "ast-outline.deps.v1";
+pub const JSON_SCHEMA_REVERSE_DEPS: &str = "ast-outline.reverse-deps.v1";
+pub const JSON_SCHEMA_CYCLES: &str = "ast-outline.cycles.v1";
+pub const JSON_SCHEMA_GRAPH: &str = "ast-outline.graph.v1";
+pub const JSON_SCHEMA_DEPS_INDEX: &str = "ast-outline.deps-index.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {

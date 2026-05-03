@@ -109,6 +109,62 @@ pub fn list() -> Value {
                 }
             },
             {
+                "name": "deps",
+                "description": "Forward import-graph traversal: what does this file import (transitively)? Builds a per-repo dep graph at `.ast-outline/deps/graph.bin` on first call, then reuses it. Returns text by default; set `json: true` for `ast-outline.deps.v1`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file":    { "type": "string",  "description": "Path to the file whose imports to follow." },
+                        "depth":   { "type": "integer", "description": "Max BFS depth (default 3).", "minimum": 1 },
+                        "external": { "type": "boolean", "description": "Include unresolved (external) imports." },
+                        "rebuild": { "type": "boolean", "description": "Drop the cached graph and rebuild." },
+                        "json":    { "type": "boolean" }
+                    },
+                    "required": ["file"]
+                }
+            },
+            {
+                "name": "reverse_deps",
+                "description": "Reverse import-graph: who imports this file (transitively)? Useful for refactor blast-radius assessment. Returns text by default; set `json: true` for `ast-outline.reverse-deps.v1`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file":    { "type": "string",  "description": "Path to the file whose importers to find." },
+                        "depth":   { "type": "integer", "description": "Max BFS depth (default 3).", "minimum": 1 },
+                        "limit":   { "type": "integer", "description": "Cap result count (default 200).", "minimum": 1 },
+                        "rebuild": { "type": "boolean" },
+                        "json":    { "type": "boolean" }
+                    },
+                    "required": ["file"]
+                }
+            },
+            {
+                "name": "cycles",
+                "description": "Find import cycles via Tarjan SCC. Returns the list of strongly-connected components with `len > 1` (or singletons with self-edges). Returns text by default; set `json: true` for `ast-outline.cycles.v1`. Exits non-zero when cycles exist (useful for CI gates).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path":     { "type": "string",  "description": "Repo root (default \".\")." },
+                        "min_size": { "type": "integer", "description": "Drop SCCs smaller than this (default 2).", "minimum": 1 },
+                        "rebuild":  { "type": "boolean" },
+                        "json":     { "type": "boolean" }
+                    }
+                }
+            },
+            {
+                "name": "graph",
+                "description": "Emit the file-level dependency graph. `format` is one of `text` (default), `json` (schema `ast-outline.graph.v1`), `dot` (GraphViz), or `dsm` (Design Structure Matrix sorted by Lakos level — great for spotting cycles visually).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path":             { "type": "string",  "description": "Repo root (default \".\")." },
+                        "format":           { "type": "string",  "description": "text|json|dot|dsm.", "default": "text" },
+                        "include_external": { "type": "boolean", "description": "Include unresolved imports in JSON output." },
+                        "rebuild":          { "type": "boolean" }
+                    }
+                }
+            },
+            {
                 "name": "search",
                 "description": "Hybrid BM25 + dense semantic search over the repo. First call builds a per-repo index at `.ast-outline/index/` (one-time, ~seconds for typical repos). Returns text by default; set `json: true` for `ast-outline.search.v1`.",
                 "inputSchema": {
@@ -170,6 +226,10 @@ pub fn call(name: &str, args: Value) -> CallResult {
         "show"         => run_show(args),
         "implements"   => run_implements(args),
         "surface"      => run_surface(args),
+        "deps"         => run_deps(args),
+        "reverse_deps" => run_reverse_deps(args),
+        "cycles"       => run_cycles(args),
+        "graph"        => run_graph(args),
         "search"       => crate::search::mcp::run_search(args),
         "find_related" => crate::search::mcp::run_find_related(args),
         "index"        => crate::search::mcp::run_index(args),
@@ -406,4 +466,144 @@ fn run_implements(args: Value) -> CallResult {
         }
         CallResult::Text(out)
     }
+}
+
+// ---- deps / reverse-deps / cycles / graph ----
+
+#[derive(Deserialize, Default)]
+struct DepsArgs {
+    file: PathBuf,
+    #[serde(default = "default_depth")] depth: usize,
+    #[serde(default)] external: bool,
+    #[serde(default)] rebuild: bool,
+    #[serde(default)] json: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct ReverseDepsArgs {
+    file: PathBuf,
+    #[serde(default = "default_depth")] depth: usize,
+    #[serde(default = "default_limit")] limit: usize,
+    #[serde(default)] rebuild: bool,
+    #[serde(default)] json: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct CyclesArgs {
+    #[serde(default = "default_path")] path: PathBuf,
+    #[serde(default = "default_min_size")] min_size: usize,
+    #[serde(default)] rebuild: bool,
+    #[serde(default)] json: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct GraphArgs {
+    #[serde(default = "default_path")] path: PathBuf,
+    #[serde(default = "default_format")] format: String,
+    #[serde(default)] include_external: bool,
+    #[serde(default)] rebuild: bool,
+}
+
+fn default_depth() -> usize { 3 }
+fn default_limit() -> usize { 200 }
+fn default_min_size() -> usize { 2 }
+fn default_path() -> PathBuf { PathBuf::from(".") }
+fn default_format() -> String { "text".to_string() }
+
+fn run_deps(args: Value) -> CallResult {
+    let a: DepsArgs = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+    };
+    let root = match crate::deps::cli::find_root_for(&a.file) {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(e),
+    };
+    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+        Ok(g) => g,
+        Err(e) => return CallResult::Error(e.to_string()),
+    };
+    let canon = match a.file.canonicalize() {
+        Ok(c) => c,
+        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
+    };
+    let _ = a.external; // forwarded but only relevant to graph; deps text always shows what's resolved.
+    let hits = crate::deps::traverse::forward(&graph, &canon, a.depth.max(1));
+    if a.json {
+        CallResult::Text(crate::deps::render::render_deps_json(&graph, &canon, &hits, true))
+    } else {
+        CallResult::Text(crate::deps::render::render_deps_text(&graph, &canon, &hits))
+    }
+}
+
+fn run_reverse_deps(args: Value) -> CallResult {
+    let a: ReverseDepsArgs = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+    };
+    let root = match crate::deps::cli::find_root_for(&a.file) {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(e),
+    };
+    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+        Ok(g) => g,
+        Err(e) => return CallResult::Error(e.to_string()),
+    };
+    let canon = match a.file.canonicalize() {
+        Ok(c) => c,
+        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.file.display(), e)),
+    };
+    let hits = crate::deps::traverse::reverse(&graph, &canon, a.depth.max(1), a.limit);
+    if a.json {
+        CallResult::Text(crate::deps::render::render_reverse_deps_json(&graph, &canon, &hits, true))
+    } else {
+        CallResult::Text(crate::deps::render::render_reverse_deps_text(&graph, &canon, &hits))
+    }
+}
+
+fn run_cycles(args: Value) -> CallResult {
+    let a: CyclesArgs = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+    };
+    let root = match a.path.canonicalize() {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
+    };
+    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+        Ok(g) => g,
+        Err(e) => return CallResult::Error(e.to_string()),
+    };
+    let cycles = crate::deps::scc::detect(&graph, a.min_size);
+    if a.json {
+        CallResult::Text(crate::deps::render::render_cycles_json(&graph, &cycles, true))
+    } else {
+        CallResult::Text(crate::deps::render::render_cycles_text(&graph, &cycles))
+    }
+}
+
+fn run_graph(args: Value) -> CallResult {
+    let a: GraphArgs = match serde_json::from_value(args) {
+        Ok(v) => v,
+        Err(e) => return CallResult::Error(format!("invalid arguments: {}", e)),
+    };
+    let root = match a.path.canonicalize() {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
+    };
+    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+        Ok(g) => g,
+        Err(e) => return CallResult::Error(e.to_string()),
+    };
+    let body = match a.format.as_str() {
+        "text" => crate::deps::render::render_graph_text(&graph),
+        "dot" => crate::deps::render::render_graph_dot(&graph),
+        "dsm" => {
+            let dsm = crate::deps::dsm::build(&graph);
+            crate::deps::render::render_graph_dsm(&graph, &dsm)
+        }
+        "json" => crate::deps::render::render_graph_json(&graph, a.include_external, true),
+        other => return CallResult::Error(format!("unknown format '{}'", other)),
+    };
+    CallResult::Text(body)
 }

@@ -45,7 +45,7 @@ fn implements_finds_struct_not_impl_shadow() {
 fn impl_methods_lifted_into_target_type() {
     // After regrouping, the methods declared in `impl Person` and
     // `impl Greeter for Person` should appear as children of Person.
-    let s = run(&[FIXTURE]);
+    let s = run(&["outline", FIXTURE]);
     let person_block = s
         .split("pub struct Person")
         .nth(1)
@@ -65,7 +65,7 @@ fn impl_methods_lifted_into_target_type() {
 
 #[test]
 fn extern_block_surfaced_as_namespace() {
-    let s = run(&[FIXTURE]);
+    let s = run(&["outline", FIXTURE]);
     assert!(
         s.contains("namespace extern \"C\""),
         "extern block not surfaced as namespace:\n{s}"
@@ -82,7 +82,7 @@ fn extern_block_surfaced_as_namespace() {
 
 #[test]
 fn macro_rules_surfaced_with_export_visibility() {
-    let s = run(&[FIXTURE]);
+    let s = run(&["outline", FIXTURE]);
     assert!(
         s.contains("macro_rules! shout"),
         "exported macro missing:\n{s}"
@@ -101,7 +101,7 @@ fn macro_rules_surfaced_with_export_visibility() {
 
 #[test]
 fn tuple_struct_has_positional_fields() {
-    let s = run(&[FIXTURE]);
+    let s = run(&["outline", FIXTURE]);
     // Pair should list two fields, named "0" and "1".
     let pair_block = s
         .split("pub struct Pair")
@@ -118,7 +118,7 @@ fn tuple_struct_has_positional_fields() {
 
 #[test]
 fn unit_struct_has_no_body() {
-    let s = run(&[FIXTURE]);
+    let s = run(&["outline", FIXTURE]);
     // Marker is `pub struct Marker;` — should appear with no children.
     let marker_block = s
         .split("pub struct Marker")
@@ -139,7 +139,7 @@ fn unit_struct_has_no_body() {
 
 #[test]
 fn trait_assoc_types_and_consts_surfaced() {
-    let s = run(&[FIXTURE]);
+    let s = run(&["outline", FIXTURE]);
     let storage_block = s
         .split("pub trait Storage")
         .nth(1)

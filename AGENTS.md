@@ -12,3 +12,4 @@
 @wiki/network-security.md
 @wiki/file-filtering.md
 @wiki/search.md
+@wiki/deps.md

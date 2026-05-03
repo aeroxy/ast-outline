@@ -1,6 +1,6 @@
 # File filtering
 
-`ast-outline` skips a lot of files when walking a directory — by design. This page documents exactly what gets included, what gets skipped, and how to override it. It applies uniformly to every subcommand: `outline`, `digest`, `show`, `implements`, `search`, `find-related`, and `index`.
+`ast-outline` skips a lot of files when walking a directory — by design. This page documents exactly what gets included, what gets skipped, and how to override it. It applies uniformly to every subcommand: `outline`, `digest`, `show`, `implements`, `surface`, `deps`, `reverse-deps`, `cycles`, `graph`, `search`, `find-related`, and `index`.
 
 ## The five layers
 

@@ -24,12 +24,33 @@ fn run(args: &[&str]) -> (bool, String, String) {
 
 #[test]
 fn outline_typo_path_exits_zero_with_note() {
-    let (ok, stdout, _) = run(&["/tmp/ast-outline-does-not-exist-xyz"]);
+    let (ok, stdout, _) = run(&["outline", "/tmp/ast-outline-does-not-exist-xyz"]);
     assert!(ok, "must exit 0");
     assert!(
         stdout.contains("# note: path not found:"),
         "missing path-not-found note:\n{stdout}"
     );
+}
+
+#[test]
+fn no_command_prints_help_exits_zero() {
+    let (ok, stdout, _stderr) = run(&[]);
+    assert!(ok, "must exit 0 even with no command");
+    assert!(
+        stdout.contains("Commands:"),
+        "expected help text on stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("# note:"),
+        "expected explanatory note:\n{stdout}"
+    );
+}
+
+#[test]
+fn unknown_subcommand_prints_help_exits_zero() {
+    let (ok, stdout, _) = run(&["totally-bogus-command"]);
+    assert!(ok, "must exit 0 on bad subcommand");
+    assert!(stdout.contains("Commands:"), "expected help:\n{stdout}");
 }
 
 #[test]
@@ -102,7 +123,7 @@ fn find_related_bad_target_exits_zero_with_note() {
 
 #[test]
 fn happy_path_outline_still_works() {
-    let (ok, stdout, _) = run(&["src/core.rs"]);
+    let (ok, stdout, _) = run(&["outline", "src/core.rs"]);
     assert!(ok, "must exit 0");
     assert!(!stdout.is_empty(), "expected non-empty outline");
     assert!(

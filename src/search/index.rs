@@ -126,6 +126,11 @@ pub struct Index {
     bm25: Bm25Index,
     files: Vec<FileRecord>,
     embedder: Arc<Embedder>,
+    /// Memoised dep graph for `find-related` boost. `None` until the
+    /// first call; then either Some(graph) when `.ast-outline/deps/`
+    /// has a fresh cache, or stays None to mean "no boost available".
+    /// Mutated via `RwLock` so the borrow remains shared.
+    dep_graph: std::sync::RwLock<Option<Option<crate::deps::DepGraph>>>,
 }
 
 impl Index {
@@ -277,6 +282,7 @@ impl Index {
             bm25,
             files,
             embedder,
+            dep_graph: std::sync::RwLock::new(None),
         })
     }
 
@@ -323,6 +329,7 @@ impl Index {
             bm25,
             files,
             embedder,
+            dep_graph: std::sync::RwLock::new(None),
         })
     }
 
@@ -380,13 +387,42 @@ impl Index {
             .collect()
     }
 
+    /// Lazily load the dep graph cache (if any). Returns None when no
+    /// fresh cache exists — `find_related` then skips the boost.
+    fn dep_graph_cached(&self) -> Option<crate::deps::DepGraph> {
+        {
+            let guard = self.dep_graph.read().ok()?;
+            if let Some(slot) = guard.as_ref() {
+                return slot.clone();
+            }
+        }
+        let loaded = crate::deps::cache::load_if_fresh(&self.paths.root);
+        if let Ok(mut w) = self.dep_graph.write() {
+            *w = Some(loaded.clone());
+        }
+        loaded
+    }
+
     /// Semantic-only similarity from a chunk identified by its file + line.
     /// Filters to chunks of the same language and excludes the source itself.
+    /// When a fresh dep-graph cache exists, also applies a multiplicative
+    /// boost to chunks in the importer/importee neighbourhood.
     pub fn find_related(
         &self,
         file_path: &str,
         line: u32,
         top_k: usize,
+    ) -> Option<Vec<SearchHit>> {
+        self.find_related_opts(file_path, line, top_k, /* dep_boost */ true, /* dep_depth */ 2)
+    }
+
+    pub fn find_related_opts(
+        &self,
+        file_path: &str,
+        line: u32,
+        top_k: usize,
+        dep_boost: bool,
+        dep_depth: usize,
     ) -> Option<Vec<SearchHit>> {
         let source_id = resolve_chunk(&self.chunks, file_path, line)?;
         let source = &self.chunks[source_id as usize];
@@ -397,8 +433,40 @@ impl Index {
             mask[i] = i as u32 != source_id && c.language == source.language;
         }
 
+        // Pull a wider candidate window when boosting so the boost can
+        // promote items that wouldn't be in the top-k by raw similarity.
+        let candidate_k = if dep_boost { top_k * 5 } else { top_k };
         let q_embed = self.embedder.encode_one(&source.content);
-        let scored = cosine_topk(&q_embed, &self.embeddings, Some(&mask), top_k);
+        let mut scored = cosine_topk(&q_embed, &self.embeddings, Some(&mask), candidate_k);
+
+        if dep_boost {
+            if let Some(graph) = self.dep_graph_cached() {
+                let abs_source = self.paths.root.join(&source.file_path);
+                let abs_source = abs_source.canonicalize().unwrap_or(abs_source);
+                let depths = crate::deps::traverse::neighbourhood_depths(&graph, &abs_source, dep_depth);
+                if !depths.is_empty() {
+                    for (id, score) in scored.iter_mut() {
+                        let chunk = &self.chunks[*id as usize];
+                        let abs = self.paths.root.join(&chunk.file_path);
+                        let abs = abs.canonicalize().unwrap_or(abs);
+                        if let Some(d) = depths.get(&abs) {
+                            *score *= match *d {
+                                0 => 1.0, // self — masked already
+                                1 => 1.40,
+                                2 => 1.20,
+                                _ => 1.0,
+                            };
+                        }
+                    }
+                    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    scored.truncate(top_k);
+                }
+            }
+        }
+
+        // Truncate (no-op if dep_boost was off).
+        scored.truncate(top_k);
+
         Some(
             scored
                 .into_iter()
