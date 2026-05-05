@@ -97,7 +97,8 @@ Want to see exactly what ast-outline walks? Compare `ast-outline digest some/dir
 ### Homebrew (macOS)
 
 ```bash
-brew install aeroxy/ast-outline/ast-outline
+brew tap aeroxy/ast-outline https://github.com/aeroxy/ast-outline
+brew install ast-outline
 ```
 
 ### Cargo
