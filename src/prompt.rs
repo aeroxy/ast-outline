@@ -59,3 +59,8 @@ pub const SKILL_FRONTMATTER: &str = "---\nname: ast-outline\ndescription: Fast A
 pub fn agent_skill_md() -> String {
     format!("{}{}", SKILL_FRONTMATTER, AGENT_PROMPT)
 }
+
+/// YAML frontmatter written at the top of `.claude/agents/Explore.md` on a
+/// fresh install. The marker block (and AGENT_PROMPT body) is appended after
+/// it, so Claude Code sees valid frontmatter at file offset 0.
+pub const EXPLORE_FRONTMATTER: &str = "---\nname: Explore\ndescription: Fast read-only search agent for locating code. Use it to find files by pattern, grep for symbols or keywords, or answer \"where is X defined / which files reference Y.\" Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: \"quick\" for a single targeted lookup, \"medium\" for moderate exploration, or \"very thorough\" to search across multiple locations and naming conventions.\n---\n";

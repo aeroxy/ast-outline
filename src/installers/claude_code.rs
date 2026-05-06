@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::json_hook::MARKER;
 use super::paths;
 use super::{common, json_object, Change, Detection, InstallOpts, Installer, Scope, Status};
-use crate::prompt::{agent_skill_md, AGENT_PROMPT};
+use crate::prompt::{agent_skill_md, AGENT_PROMPT, EXPLORE_FRONTMATTER};
 
 pub struct ClaudeCode;
 
@@ -121,7 +121,11 @@ impl Installer for ClaudeCode {
         let mut changes = Vec::with_capacity(SHADOWED_SUBAGENTS.len());
         for name in SHADOWED_SUBAGENTS {
             let path = self.subagent_path(scope, name)?;
-            changes.push(common::install_prompt_in(&path, AGENT_PROMPT, opts)?);
+            let frontmatter = match *name {
+                "Explore" => EXPLORE_FRONTMATTER,
+                _ => "",
+            };
+            changes.push(common::install_subagent_in(&path, frontmatter, AGENT_PROMPT, opts)?);
         }
         Ok(changes)
     }
@@ -322,6 +326,7 @@ mod tests {
         assert!(matches!(changes[0], Change::Created(_)));
         let path = dir.path().join(".claude/agents/Explore.md");
         let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("---\nname: Explore\n"), "frontmatter must be at offset 0");
         assert!(contents.contains("<!-- ast-outline:begin"));
         assert!(contents.contains("ast-outline"));
     }

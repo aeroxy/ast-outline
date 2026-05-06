@@ -51,6 +51,55 @@ pub fn install_prompt_in(
     }
 }
 
+/// Like `install_prompt_in` but seeds an empty file with `frontmatter` before
+/// appending the marker block. This keeps valid YAML frontmatter at offset 0
+/// for Claude Code sub-agent files, while still allowing users who already
+/// have their own `.claude/agents/<Name>.md` to retain their customizations.
+pub fn install_subagent_in(
+    path: &Path,
+    frontmatter: &str,
+    snippet: &str,
+    opts: &InstallOpts,
+) -> Result<Change, String> {
+    let on_disk = read_optional(path)?.unwrap_or_default();
+    let is_new = on_disk.is_empty();
+    // When the file doesn't exist yet, seed `existing` with the frontmatter so
+    // marker_block::apply appends the block after it rather than at offset 0.
+    let existing = if is_new { frontmatter.to_string() } else { on_disk.clone() };
+    let body = snippet.trim_end_matches('\n').to_string() + "\n";
+    let (new_contents, outcome) = marker_block::apply(
+        &existing,
+        &body,
+        &body,
+        snippet,
+        env!("CARGO_PKG_VERSION"),
+        opts.force,
+    );
+    match outcome {
+        ApplyOutcome::UserEditsBlocked(diff) => Err(format!(
+            "{}: user edits inside marker block; pass --force to overwrite\n{}",
+            path.display(),
+            diff
+        )),
+        _ => {
+            if on_disk == new_contents {
+                return Ok(Change::Skipped {
+                    path: path.to_path_buf(),
+                    reason: "already up to date".into(),
+                });
+            }
+            if !opts.dry_run {
+                atomic_write(path, &new_contents)?;
+            }
+            Ok(if is_new {
+                Change::Created(path.to_path_buf())
+            } else {
+                Change::Updated(path.to_path_buf())
+            })
+        }
+    }
+}
+
 pub fn install_json_hook_in<F>(
     path: &Path,
     hook_path: &[&str],
