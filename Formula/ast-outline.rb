@@ -1,8 +1,8 @@
 class AstOutline < Formula
   desc "Fast AST-based code-navigation toolkit: shape, surface, deps, search"
   homepage "https://github.com/aeroxy/ast-outline"
-  url "https://github.com/aeroxy/ast-outline/releases/download/1.0.1/ast-outline-macos-arm64.zip"
-  sha256 "4bbe228ca5b029935c9c0548f148e2b30a07734fe18f00dccc2f8440d06164a7"
+  url "https://github.com/aeroxy/ast-outline/releases/download/1.1.0/ast-outline-macos-arm64.zip"
+  sha256 "22b58ee7538a4bb814422eb2191a5d4742872ea4138a91c9e13d326822872bad"
   license "MIT"
 
   def install

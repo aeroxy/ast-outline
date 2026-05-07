@@ -149,11 +149,28 @@ pub struct Index {
     bm25: Bm25Index,
     files: Vec<FileRecord>,
     embedder: Arc<Embedder>,
+    /// `live[i] == false` iff chunk id `i` is in `meta.tombstones`.
+    /// `None` (the fast path) when no tombstones exist — search/find_related
+    /// skip the live filter entirely.
+    live_mask: Option<Vec<bool>>,
     /// Memoised dep graph for `find-related` boost. `None` until the
     /// first call; then either Some(graph) when `.ast-outline/deps/`
     /// has a fresh cache, or stays None to mean "no boost available".
     /// Mutated via `RwLock` so the borrow remains shared.
     dep_graph: std::sync::RwLock<Option<Option<crate::deps::DepGraph>>>,
+}
+
+/// Compaction kicks in when tombstones occupy more than this fraction of
+/// total chunk slots — a full rebuild reclaims the space and resets BM25
+/// IDF skew. Override at build time with `AST_OUTLINE_COMPACTION_RATIO`.
+const DEFAULT_COMPACTION_RATIO: f32 = 0.30;
+
+fn compaction_ratio() -> f32 {
+    std::env::var("AST_OUTLINE_COMPACTION_RATIO")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .filter(|v| (0.0..=1.0).contains(v))
+        .unwrap_or(DEFAULT_COMPACTION_RATIO)
 }
 
 impl Index {
@@ -168,20 +185,54 @@ impl Index {
         // corruption) fall back to a fresh build.
         if paths.meta_json.exists() {
             match Self::load_unlocked(&paths) {
-                Ok(loaded) => {
+                Ok(mut loaded) => {
+                    // Compaction trigger first — fires even on empty-delta
+                    // opens so a stale-but-quiet repo gets cleaned up too.
+                    let total_chunks = loaded.meta.chunk_count as usize;
+                    let dead = loaded.meta.tombstones.len();
+                    if total_chunks > 0
+                        && (dead as f32) / (total_chunks as f32) > compaction_ratio()
+                    {
+                        eprintln!(
+                            "ast-outline: tombstones {}/{} exceed {:.0}% — compacting (full rebuild)",
+                            dead,
+                            total_chunks,
+                            compaction_ratio() * 100.0,
+                        );
+                        return Self::build_with_corpus(
+                            path_arg,
+                            cwd,
+                            &loaded.meta.indexed_corpus,
+                        );
+                    }
+
                     let corpus_dir = corpus_walk_dir(&paths.root, &loaded.meta.indexed_corpus);
                     let delta = compute_delta(&corpus_dir, &paths.root, &loaded.files);
-                    if !delta.requires_rebuild() {
+                    if !delta.requires_rebuild() && delta.mtime_only.is_empty() {
                         return Ok(loaded);
                     }
-                    eprintln!(
-                        "ast-outline: index stale ({} added, {} modified, {} removed) — rebuilding",
-                        delta.added.len(),
-                        delta.modified.len(),
-                        delta.removed.len(),
-                    );
-                    // Preserve the existing corpus on stale rebuild.
-                    return Self::build_with_corpus(path_arg, cwd, &loaded.meta.indexed_corpus);
+
+                    if delta.requires_rebuild() {
+                        eprintln!(
+                            "ast-outline: index stale ({} added, {} modified, {} removed) — applying delta",
+                            delta.added.len(),
+                            delta.modified.len(),
+                            delta.removed.len(),
+                        );
+                    }
+                    match loaded.apply_delta(&delta) {
+                        Ok(()) => return Ok(loaded),
+                        Err(e) => {
+                            eprintln!(
+                                "ast-outline: delta apply failed ({e}); falling back to full rebuild"
+                            );
+                            return Self::build_with_corpus(
+                                path_arg,
+                                cwd,
+                                &loaded.meta.indexed_corpus,
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("ast-outline: index unreadable ({e}); rebuilding");
@@ -337,8 +388,176 @@ impl Index {
             bm25,
             files,
             embedder,
+            live_mask: None, // fresh build → no tombstones
             dep_graph: std::sync::RwLock::new(None),
         })
+    }
+
+    /// Apply a delta in place: tombstone removed/modified files' old
+    /// chunks, re-chunk + re-embed modified/added files, append new chunks
+    /// + embedding rows, rebuild BM25 over the live set, refresh mtime-only
+    /// records, and persist the four binaries + meta.
+    ///
+    /// On any I/O failure during persistence, the in-memory state may be
+    /// partially updated; the caller (Index::open) treats this as a hard
+    /// failure and falls back to a full rebuild.
+    fn apply_delta(&mut self, delta: &crate::search::cache::Delta) -> io::Result<()> {
+        use std::collections::HashSet;
+
+        let started = std::time::Instant::now();
+
+        // --- 1. Identify which existing FileRecords get tombstoned ---
+        // Keys: home-relative POSIX paths (FileRecord.path).
+        let removed_keys: HashSet<&str> =
+            delta.removed.iter().map(|s| s.as_str()).collect();
+        let modified_keys: HashSet<String> = delta
+            .modified
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&self.paths.root)
+                    .map(normalise_path)
+                    .unwrap_or_else(|_| p.display().to_string())
+            })
+            .collect();
+
+        let mut new_tombstones: Vec<u32> = Vec::new();
+        let mut new_files: Vec<FileRecord> = Vec::with_capacity(self.files.len());
+        let mut mtime_refresh: std::collections::HashMap<String, (i128, u64)> =
+            std::collections::HashMap::new();
+        for p in &delta.mtime_only {
+            let rel = p
+                .strip_prefix(&self.paths.root)
+                .map(normalise_path)
+                .unwrap_or_else(|_| p.display().to_string());
+            if let Ok(m) = fs::metadata(p) {
+                mtime_refresh.insert(rel, (mtime_nanos(&m), m.len()));
+            }
+        }
+
+        for f in self.files.drain(..) {
+            let key = f.path.as_str();
+            let is_removed = removed_keys.contains(key);
+            let is_modified = modified_keys.contains(&f.path);
+            if is_removed || is_modified {
+                for id in f.chunk_start..f.chunk_end {
+                    new_tombstones.push(id);
+                }
+                continue; // dropped (modified files re-added below)
+            }
+            if let Some((m, sz)) = mtime_refresh.remove(&f.path) {
+                let mut updated = f;
+                updated.mtime_ns = m;
+                updated.size = sz;
+                new_files.push(updated);
+            } else {
+                new_files.push(f);
+            }
+        }
+        self.files = new_files;
+
+        // --- 2. Re-chunk modified + added in parallel; embed sequentially
+        //         (embedder is cheap per call but its internal state isn't
+        //          shared across threads in our wrapper). Append in stable
+        //          input order so chunk_range is contiguous per file. ---
+        let mut to_index: Vec<PathBuf> = Vec::with_capacity(
+            delta.modified.len() + delta.added.len(),
+        );
+        to_index.extend(delta.modified.iter().cloned());
+        to_index.extend(delta.added.iter().cloned());
+        // Deterministic ordering for reproducible chunk ids.
+        to_index.sort();
+
+        let chunked: Vec<(PathBuf, Vec<Chunk>)> = to_index
+            .par_iter()
+            .map(|p| {
+                let rel = p
+                    .strip_prefix(&self.paths.root)
+                    .map(normalise_path)
+                    .unwrap_or_else(|_| p.display().to_string());
+                (p.clone(), chunk_file(p, &rel))
+            })
+            .collect();
+
+        let mut added_chunks: u32 = 0;
+        let tombstoned_chunks: u32 = new_tombstones.len() as u32;
+        for (path, file_chunks) in chunked {
+            let chunk_start = self.chunks.len() as u32;
+            for c in file_chunks {
+                let v = self.embedder.encode_one(&c.content);
+                self.embeddings.extend_from_slice(&v);
+                self.chunks.push(c);
+            }
+            let chunk_end = self.chunks.len() as u32;
+            added_chunks += chunk_end - chunk_start;
+
+            let meta_io = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mtime_ns = mtime_nanos(&meta_io);
+            let size = meta_io.len();
+            let content_hash = hash_file(&path).unwrap_or(0);
+            let rel = path
+                .strip_prefix(&self.paths.root)
+                .map(normalise_path)
+                .unwrap_or_else(|_| path.display().to_string());
+            self.files.push(FileRecord {
+                path: rel,
+                mtime_ns,
+                size,
+                content_hash,
+                chunk_start,
+                chunk_end,
+            });
+        }
+        // Stable sort so persistence is deterministic.
+        self.files.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // --- 3. Update tombstones + meta counters ---
+        if !new_tombstones.is_empty() {
+            self.meta.tombstones.extend(new_tombstones);
+            self.meta.tombstones.sort_unstable();
+            self.meta.tombstones.dedup();
+        }
+        self.meta.chunk_count = self.chunks.len() as u32;
+        self.live_mask = build_live_mask(self.chunks.len(), &self.meta.tombstones);
+
+        // --- 4. Rebuild BM25 from live chunks. Tombstoned slots produce
+        //         empty doc-tokens so they don't contribute terms; the
+        //         empty docs still occupy doc-ids 1:1 with `chunks`,
+        //         keeping `get_scores` slot-aligned. ---
+        let live_mask_view = self.live_mask.as_deref();
+        let bm25_docs: Vec<Vec<String>> = self
+            .chunks
+            .par_iter()
+            .enumerate()
+            .map(|(i, c)| {
+                if live_mask_view.is_some_and(|m| !m[i]) {
+                    Vec::new()
+                } else {
+                    tokenize(&enrich_for_bm25(c))
+                }
+            })
+            .collect();
+        self.bm25 = Bm25Index::build(bm25_docs);
+
+        // --- 5. Persist atomically (best-effort: each file via write_atomic;
+        //         meta.json is renamed last so partial-write recovery on
+        //         next open will see either the old or new consistent state
+        //         once we add directory-rename atomicity). ---
+        ensure_gitignore(&self.paths)?;
+        let _lock = acquire_lock(&self.paths)?;
+        write_bincode(&self.paths.chunks_bin, &self.chunks)?;
+        write_bincode(&self.paths.files_bin, &self.files)?;
+        write_bincode(&self.paths.bm25_bin, &self.bm25)?;
+        write_embeddings(&self.paths.embeddings_f32, &self.embeddings)?;
+        write_meta(&self.paths.meta_json, &self.meta)?;
+
+        eprintln!(
+            "ast-outline: delta applied (+{added_chunks} chunks, +{tombstoned_chunks} tombstones) in {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
+        Ok(())
     }
 
     /// Load from disk without delta-checking. Used by `open` and tests.
@@ -377,6 +596,7 @@ impl Index {
 
         let model_dir = ensure_model(&ModelInfo::potion_code_16m())?;
         let embedder = Arc::new(Embedder::open(&model_dir)?);
+        let live_mask = build_live_mask(chunks.len(), &meta.tombstones);
 
         Ok(Self {
             paths: paths.clone(),
@@ -386,12 +606,26 @@ impl Index {
             bm25,
             files,
             embedder,
+            live_mask,
             dep_graph: std::sync::RwLock::new(None),
         })
     }
 
+    /// Total chunk slots, including tombstones.
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
+    }
+
+    /// Live chunks (non-tombstoned) — what search actually retrieves.
+    #[allow(dead_code)] // public for embedders + future --stats wiring
+    pub fn live_chunk_count(&self) -> usize {
+        self.chunks.len() - self.meta.tombstones.len()
+    }
+
+    /// Number of tombstoned chunk slots.
+    #[allow(dead_code)] // public for embedders + future --stats wiring
+    pub fn tombstone_count(&self) -> usize {
+        self.meta.tombstones.len()
     }
 
     /// Hybrid BM25 + dense search with full ranking pipeline.
@@ -402,11 +636,12 @@ impl Index {
         let alpha = resolve_alpha(query, opts.alpha);
         let candidate_count = opts.top_k * 5;
 
-        // Build combined mask: language ∧ query_scope. Either may be None.
+        // Build combined mask: language ∧ query_scope ∧ live. Any may be None.
         let mask = build_combined_mask(
             &self.chunks,
             opts.languages.as_deref(),
             opts.query_scope.as_deref(),
+            self.live_mask.as_deref(),
         );
 
         // Coverage-gap warning: if query_scope is set and points outside the
@@ -507,12 +742,14 @@ impl Index {
         let source_id = resolve_chunk(&self.chunks, file_path, line)?;
         let source = &self.chunks[source_id as usize];
 
-        // Build language-restricted + self-excluding (+ scope-filtered) mask.
+        // Build language-restricted + self-excluding (+ scope-filtered + live) mask.
+        let live = self.live_mask.as_deref();
         let mut mask = vec![false; self.chunks.len()];
         for (i, c) in self.chunks.iter().enumerate() {
             mask[i] = i as u32 != source_id
                 && c.language == source.language
-                && scope_matches(query_scope, &c.file_path);
+                && scope_matches(query_scope, &c.file_path)
+                && live.is_none_or(|m| m[i]);
         }
 
         // Pull a wider candidate window when boosting so the boost can
@@ -565,31 +802,50 @@ impl Index {
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Combine language + query_scope masks. Returns `None` when neither filter
-/// is active (semantically equivalent to "all chunks pass").
+/// Combine language + query_scope + tombstone (`live`) masks. Returns
+/// `None` when no filter is active (semantically: all chunks pass).
 fn build_combined_mask(
     chunks: &[Chunk],
     languages: Option<&[String]>,
     query_scope: Option<&str>,
+    live_mask: Option<&[bool]>,
 ) -> Option<Vec<bool>> {
     let lang_active = languages.is_some_and(|l| !l.is_empty());
     let scope_active = query_scope.is_some_and(|s| !s.is_empty());
-    if !lang_active && !scope_active {
+    let live_active = live_mask.is_some();
+    if !lang_active && !scope_active && !live_active {
         return None;
     }
     Some(
         chunks
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(i, c)| {
                 let lang_ok = match languages {
                     Some(langs) if !langs.is_empty() => langs.iter().any(|l| l == &c.language),
                     _ => true,
                 };
                 let scope_ok = scope_matches(query_scope, &c.file_path);
-                lang_ok && scope_ok
+                let live_ok = live_mask.is_none_or(|m| m[i]);
+                lang_ok && scope_ok && live_ok
             })
             .collect(),
     )
+}
+
+/// Build a `live[i] == !is_tombstoned(i)` mask, or `None` when there are no
+/// tombstones (callers can short-circuit the AND in the hot loop).
+fn build_live_mask(chunk_count: usize, tombstones: &[u32]) -> Option<Vec<bool>> {
+    if tombstones.is_empty() {
+        return None;
+    }
+    let mut m = vec![true; chunk_count];
+    for &id in tombstones {
+        if let Some(slot) = m.get_mut(id as usize) {
+            *slot = false;
+        }
+    }
+    Some(m)
 }
 
 /// True when `file_path` is under (or equal to) the `query_scope` prefix.
@@ -1056,12 +1312,12 @@ mod tests {
             language: "rust".to_string(),
         };
         let chunks = vec![mk()];
-        assert!(build_combined_mask(&chunks, None, None).is_none());
-        assert!(build_combined_mask(&chunks, None, Some("")).is_none());
+        assert!(build_combined_mask(&chunks, None, None, None).is_none());
+        assert!(build_combined_mask(&chunks, None, Some(""), None).is_none());
     }
 
     #[test]
-    fn build_combined_mask_combines_lang_and_scope() {
+    fn build_combined_mask_combines_lang_scope_and_live() {
         let mk = |lang: &str, p: &str| Chunk {
             content: String::new(),
             file_path: p.to_string(),
@@ -1077,9 +1333,35 @@ mod tests {
             mk("python", "src/c.py"),
             mk("rust", "src/d.rs"),
         ];
-        let mask =
-            build_combined_mask(&chunks, Some(&["rust".to_string()]), Some("src"))
-                .expect("filters active → some mask");
+        let mask = build_combined_mask(
+            &chunks,
+            Some(&["rust".to_string()]),
+            Some("src"),
+            None,
+        )
+        .expect("filters active → some mask");
         assert_eq!(mask, vec![true, false, false, true]);
+
+        // Tombstone src/d.rs (id 3) — should drop out.
+        let live = vec![true, true, true, false];
+        let mask = build_combined_mask(
+            &chunks,
+            Some(&["rust".to_string()]),
+            Some("src"),
+            Some(&live),
+        )
+        .expect("filters active");
+        assert_eq!(mask, vec![true, false, false, false]);
+    }
+
+    #[test]
+    fn live_mask_returns_none_when_no_tombstones() {
+        assert!(build_live_mask(10, &[]).is_none());
+    }
+
+    #[test]
+    fn live_mask_marks_tombstoned_slots_dead() {
+        let m = build_live_mask(5, &[1, 3]).expect("tombstones present");
+        assert_eq!(m, vec![true, false, true, false, true]);
     }
 }

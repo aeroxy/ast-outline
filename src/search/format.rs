@@ -105,6 +105,18 @@ pub fn render_index_stats_text(meta: &Meta, file_count: usize, home: &Path) -> S
     } else {
         meta.indexed_corpus.clone()
     };
+    let total = meta.chunk_count as usize;
+    let tombs = meta.tombstones.len();
+    let live = total.saturating_sub(tombs);
+    let chunks_line = if tombs == 0 {
+        meta.chunk_count.to_string().green().bold().to_string()
+    } else {
+        format!(
+            "{} {}",
+            live.to_string().green().bold(),
+            dim(format!("({} live · {} tombstoned)", live, tombs)),
+        )
+    };
     format!(
         "# Index stats\n\
          {schema_l} {schema}\n\
@@ -126,7 +138,7 @@ pub fn render_index_stats_text(meta: &Meta, file_count: usize, home: &Path) -> S
         corpus = corpus_display.cyan(),
         model_id = meta.model.id.cyan(),
         dim_suffix = dim(format!("(dim {})", meta.model.dim)),
-        chunks = meta.chunk_count.to_string().green().bold(),
+        chunks = chunks_line,
         files = file_count.to_string().green().bold(),
         created = meta.created_unix,
         unix_tag = dim("(UNIX)".to_string()),
@@ -139,6 +151,9 @@ pub fn render_index_stats_json(
     home: &Path,
     pretty: bool,
 ) -> String {
+    let total = meta.chunk_count as usize;
+    let tombs = meta.tombstones.len();
+    let live = total.saturating_sub(tombs);
     let v = json!({
         "schema": JSON_SCHEMA_INDEX,
         "ast_outline_version": meta.ast_outline_version,
@@ -147,6 +162,8 @@ pub fn render_index_stats_json(
         "model_id": meta.model.id,
         "dim": meta.model.dim,
         "chunk_count": meta.chunk_count,
+        "live_chunk_count": live,
+        "tombstone_count": tombs,
         "file_count": file_count,
         "created_unix": meta.created_unix,
     });

@@ -175,6 +175,63 @@ impl DepGraph {
             Err(_) => p.display().to_string(),
         }
     }
+
+    /// Whether `p` is under the POSIX `scope` (relative to `self.root`).
+    /// Empty / matching scope passes everything.
+    pub fn in_scope(&self, p: &Path, scope: &str) -> bool {
+        if scope.is_empty() {
+            return true;
+        }
+        let rel = self.rel(p);
+        if rel == scope {
+            return true;
+        }
+        if rel.len() <= scope.len() {
+            return false;
+        }
+        rel.starts_with(scope) && rel.as_bytes()[scope.len()] == b'/'
+    }
+
+    /// Return a clone restricted to nodes (and edges between nodes) under
+    /// `scope`. Empty scope returns a clone of the original.
+    pub fn subgraph_for_scope(&self, scope: &str) -> DepGraph {
+        if scope.is_empty() {
+            return self.clone();
+        }
+        let mut forward: HashMap<PathBuf, Vec<DepEdge>> = HashMap::new();
+        for (src, edges) in &self.forward {
+            if !self.in_scope(src, scope) {
+                continue;
+            }
+            let kept: Vec<DepEdge> = edges
+                .iter()
+                .filter(|e| self.in_scope(&e.target, scope))
+                .cloned()
+                .collect();
+            forward.insert(src.clone(), kept);
+        }
+        let external: HashMap<PathBuf, Vec<String>> = self
+            .external
+            .iter()
+            .filter(|(p, _)| self.in_scope(p, scope))
+            .map(|(p, v)| (p.clone(), v.clone()))
+            .collect();
+        let edge_count: usize = forward.values().map(|v| v.len()).sum();
+        let external_count: usize = external.values().map(|v| v.len()).sum();
+        DepGraph {
+            schema: self.schema.clone(),
+            forward,
+            external,
+            root: self.root.clone(),
+            built_at: self.built_at,
+            stats: GraphStats {
+                file_count: self.stats.file_count,
+                edge_count,
+                external_count,
+                build_ms: self.stats.build_ms,
+            },
+        }
+    }
 }
 
 /// Drop duplicate `(source, target)` edges, keeping the first occurrence.

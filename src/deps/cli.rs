@@ -9,6 +9,7 @@ use crate::deps::render;
 use crate::deps::scc;
 use crate::deps::traverse;
 use crate::deps::{load_or_build, DepGraph};
+use crate::project_root::{relative_posix, resolve_home, Marker};
 
 pub fn run_deps(
     file: &Path,
@@ -17,7 +18,7 @@ pub fn run_deps(
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
-    let root = match find_root_for(file) {
+    let root = match find_root_for_with_cache(file) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -58,7 +59,7 @@ pub fn run_reverse_deps(
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
-    let root = match find_root_for(file) {
+    let root = match find_root_for_with_cache(file) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("# note: {}", e);
@@ -104,10 +105,11 @@ pub fn run_cycles(
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
-    let root = match path.canonicalize() {
-        Ok(r) => r,
+    let cwd = current_dir_or_dot();
+    let (root, scope) = match resolve_dir_root_and_scope(path, &cwd) {
+        Ok(rs) => rs,
         Err(e) => {
-            eprintln!("# note: cannot resolve {}: {}", path.display(), e);
+            eprintln!("# note: {}", e);
             return 2;
         }
     };
@@ -118,7 +120,12 @@ pub fn run_cycles(
             return 1;
         }
     };
-    let cycles = scc::detect(&graph, min_size);
+    // Detect cycles on the full cached graph, then keep only those whose
+    // members are entirely within the user's requested scope.
+    let mut cycles = scc::detect(&graph, min_size);
+    if !scope.is_empty() {
+        cycles.retain(|c| c.members.iter().all(|m| graph.in_scope(m, &scope)));
+    }
     if json {
         println!(
             "{}",
@@ -142,19 +149,25 @@ pub fn run_graph(
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
-    let root = match path.canonicalize() {
-        Ok(r) => r,
+    let cwd = current_dir_or_dot();
+    let (root, scope) = match resolve_dir_root_and_scope(path, &cwd) {
+        Ok(rs) => rs,
         Err(e) => {
-            eprintln!("# note: cannot resolve {}: {}", path.display(), e);
+            eprintln!("# note: {}", e);
             return 2;
         }
     };
-    let graph = match load_or_build(&root, rebuild) {
+    let full = match load_or_build(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
             return 1;
         }
+    };
+    let graph = if scope.is_empty() {
+        full
+    } else {
+        full.subgraph_for_scope(&scope)
     };
     match format {
         "text" => print!("{}", render::render_graph_text(&graph)),
@@ -173,6 +186,40 @@ pub fn run_graph(
         }
     }
     0
+}
+
+/// Resolve `(graph_root, scope)` for directory-arg subcommands (cycles,
+/// graph). Walks up from `path` looking for an existing `.ast-outline/deps/`
+/// (capped at `cwd`); falls back to building at `cwd` when `path` is under
+/// `cwd`, else `path` itself. `scope` is `path` expressed relative to the
+/// resolved root (POSIX, "" = whole root).
+fn resolve_dir_root_and_scope(path: &Path, cwd: &Path) -> Result<(PathBuf, String), String> {
+    if !path.exists() {
+        return Err(format!("path not found: {}", path.display()));
+    }
+    let (home, _) = resolve_home(path, cwd, Marker::DepsCache);
+    let scope = relative_posix(path, &home).unwrap_or_default();
+    Ok((home, scope))
+}
+
+fn current_dir_or_dot() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Prefer an existing `.ast-outline/deps/` cache between `file` and CWD.
+/// Falls back to the manifest walk (`find_root_for`) when no cache exists,
+/// preserving the historical behaviour for users running `deps` for the
+/// first time.
+fn find_root_for_with_cache(file: &Path) -> Result<PathBuf, String> {
+    if !file.exists() {
+        return Err(format!("file not found: {}", file.display()));
+    }
+    let cwd = current_dir_or_dot();
+    let (home, found) = resolve_home(file, &cwd, Marker::DepsCache);
+    if found {
+        return Ok(home);
+    }
+    find_root_for(file)
 }
 
 /// Look for the project root (containing a known manifest) starting
