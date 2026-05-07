@@ -4,6 +4,7 @@ Fast, AST-based **code-navigation toolkit** for source files — read the *shape
 
 `ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and uses [rayon](https://github.com/rayon-rs/rayon) to parse your entire workspace concurrently in milliseconds. The `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline). The Rust code itself originated from a larger code-agent project and is not a direct port.
 
+[![crates.io](https://img.shields.io/crates/v/ast-outline.svg)](https://crates.io/crates/ast-outline)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aeroxy/ast-outline)
 
