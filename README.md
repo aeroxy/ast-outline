@@ -60,6 +60,7 @@ For "what does this package actually expose?" — historically the most expensiv
 | --- | --- |
 | Rust       | `.rs` |
 | C#         | `.cs` |
+| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
 | Python     | `.py`, `.pyi` |
 | TypeScript | `.ts`, `.tsx` |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
@@ -67,6 +68,9 @@ For "what does this package actually expose?" — historically the most expensiv
 | Kotlin     | `.kt`, `.kts` |
 | Scala      | `.scala`, `.sc` |
 | Go         | `.go` |
+| PHP        | `.php` |
+| Ruby       | `.rb` |
+| SQL        | `.sql`, `.ddl`, `.dml` |
 | Markdown   | `.md`, `.markdown`, `.mdx`, `.mdown` |
 
 *More coming soon! Adding another language is a single new adapter file leveraging the massive `ast-grep` language ecosystem.*

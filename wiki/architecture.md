@@ -42,10 +42,10 @@ Tools are exposed in their text form by default — that's what the agent prompt
 
 Adding a new language is incredibly straightforward due to the foundation provided by `ast-grep-language`.
 
-1. Identify the target language from the `SupportLang` enum in `ast-grep` (e.g. `SupportLang::Cpp`). If not present, you may need to implement a native fallback like we do for `MarkdownLang` in `src/adapters/markdown.rs`.
-2. Create a new `src/adapters/mylang.rs` file.
+1. Identify the target language from the `SupportLang` enum in `ast-grep` (e.g. `SupportLang::Cpp`). If not present, you'll need a native fallback — Markdown does this via `MarkdownLang` in `src/adapters/markdown.rs`, and SQL skips tree-sitter entirely with a regex parser in `src/adapters/sql.rs`.
+2. Create a new `src/adapters/mylang.rs` file and `pub mod mylang;` it from [`src/adapters/mod.rs`](../src/adapters/mod.rs).
 3. Implement the `LanguageAdapter` trait.
 4. Write a `_walk_top` function to perform depth-first traversal of the `ast_grep_core::Node` children.
 5. Identify AST kinds by matching `node.kind()` and retrieve source values using `node.field("name")` or slicing `src[node.range().start .. node.range().end]`.
 6. Convert them to generic `Declaration` objects representing Classes, Functions, Fields, Interfaces, etc.
-7. Wire your new adapter into the `parse_file` routing match block in `src/main.rs`!
+7. Wire your new adapter into the `parse_file_for_hook` routing match block in [`src/main_helpers.rs`](../src/main_helpers.rs). Languages that bypass `ast-grep` (Markdown, SQL) get a pre-`SupportLang` extension check at the top of that function.
