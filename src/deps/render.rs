@@ -1,9 +1,9 @@
 //! Output formatting for `deps`, `reverse-deps`, `cycles`, `graph`.
-//! Text + JSON for everything; DOT and DSM for `graph` only.
+//! Text + JSON for everything.
 //!
-//! Text/DSM modes use `colored::Colorize` which auto-detects TTY and
-//! respects `NO_COLOR=1` (so integration tests stay byte-stable). DOT
-//! and JSON outputs are always plain.
+//! Text mode uses `colored::Colorize` which auto-detects TTY and
+//! respects `NO_COLOR=1` (so integration tests stay byte-stable).
+//! JSON output is always plain.
 
 use colored::Colorize;
 use serde::Serialize;
@@ -14,7 +14,6 @@ use std::path::Path;
 use crate::core::{
     JSON_SCHEMA_CYCLES, JSON_SCHEMA_DEPS, JSON_SCHEMA_GRAPH, JSON_SCHEMA_REVERSE_DEPS,
 };
-use crate::deps::dsm::Dsm;
 use crate::deps::graph::{DepEdge, DepGraph, ImportKind};
 use crate::deps::scc::Cycle;
 use crate::deps::traverse::DepHit;
@@ -121,90 +120,6 @@ pub fn render_graph_text(graph: &DepGraph) -> String {
             );
         }
     }
-    out
-}
-
-pub fn render_graph_dot(graph: &DepGraph) -> String {
-    let mut out = String::from("digraph deps {\n  rankdir=LR;\n  node [shape=box,fontsize=10];\n");
-    let edges = graph.sorted_edges();
-    for f in graph.files() {
-        let _ = writeln!(out, "  \"{}\";", graph.rel(&f));
-    }
-    for (s, t, _k) in edges {
-        let _ = writeln!(
-            out,
-            "  \"{}\" -> \"{}\";",
-            graph.rel(&s),
-            graph.rel(&t)
-        );
-    }
-    out.push_str("}\n");
-    out
-}
-
-pub fn render_graph_dsm(graph: &DepGraph, dsm: &Dsm) -> String {
-    let mut out = String::new();
-    let n = dsm.files.len();
-    let _ = writeln!(
-        out,
-        "{}",
-        format!("DSM ({} files, sorted by Lakos level):", n).cyan().bold()
-    );
-    let _ = writeln!(out);
-    let labels: Vec<String> = dsm.files.iter().map(|f| graph.rel(f)).collect();
-    let max_label = labels.iter().map(|s| s.len()).max().unwrap_or(0).min(40);
-    let header_axis: String = (0..n).map(|i| (i % 10).to_string()).collect();
-    let _ = writeln!(
-        out,
-        "{:>width$}  {}",
-        "",
-        header_axis.dimmed(),
-        width = max_label + 4
-    );
-    for (i, label) in labels.iter().enumerate() {
-        let mut row = String::new();
-        for j in 0..n {
-            let glyph = if i == j {
-                "·".dimmed().to_string()
-            } else if dsm.cells[i][j] {
-                if j > i {
-                    // Above the diagonal — importer (lower level) depending on
-                    // an importee at *higher* level. Architectural inversion.
-                    "X".red().bold().to_string()
-                } else {
-                    "X".green().to_string()
-                }
-            } else {
-                ".".dimmed().to_string()
-            };
-            row.push_str(&glyph);
-        }
-        let lvl = dsm.levels[i];
-        let label_trim = if label.chars().count() > max_label {
-            // Trim from the front so the file basename stays visible.
-            let start = label.chars().count() - max_label + 1;
-            format!("…{}", label.chars().skip(start).collect::<String>())
-        } else {
-            label.clone()
-        };
-        let _ = writeln!(
-            out,
-            "{:>width$}  {} {}",
-            label_trim.cyan(),
-            row,
-            format!("L{}", lvl).dimmed(),
-            width = max_label
-        );
-    }
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "Legend: {} = imports (above-diagonal = inversion), {} = downstream import, {} = self, {} = no edge, L = Lakos level",
-        "X".red().bold(),
-        "X".green(),
-        "·".dimmed(),
-        ".".dimmed()
-    );
     out
 }
 

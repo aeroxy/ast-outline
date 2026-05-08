@@ -1,25 +1,24 @@
-pub const AGENT_PROMPT: &str = r#"## Prefer `ast-outline` over full reads
+pub const AGENT_PROMPT: &str = r#"## Use `ast-outline` to explore the code
 
 Usage: ast-outline <COMMAND> [OPTIONS]
 
 Commands:
-  outline       Outline given files or directories (signatures with line ranges)
-  digest        One-page module map
+  outline       Outline files or directories — signatures with line ranges, no method bodies
   show          Extract source of a symbol
+  digest        One-page module map
   implements    Find subclasses / implementations
-  surface       True public API surface (resolves `pub use` / `__all__`)
-  deps          Forward import-graph traversal: what a file imports
-  reverse-deps  Backward import-graph: who imports a file
-  cycles        Find import cycles via Tarjan SCC
-  graph         Emit the dep graph (text / JSON / DOT / DSM)
+  prompt        Print the agent prompt snippet
+  status        Report what's installed where
+  hook          Internal: read a tool-call event from stdin and respond
+  mcp           Run as an MCP (Model Context Protocol) server over stdio
   search        Hybrid BM25 + dense semantic search over the repo
   find-related  Find chunks semantically similar to a given file:line
+  surface       True public API surface — resolves `pub use` / `__all__` re-exports
+  deps          Forward import-graph traversal: what does this file import (transitively)?
+  reverse-deps  Reverse import-graph: who imports this file (transitively)?
+  cycles        Find import cycles via Tarjan SCC
+  graph         Emit the dep graph (text or JSON)
   index         Build, refresh, or inspect the per-repo search index
-  prompt        Print this agent prompt snippet
-  install       Install ast-outline into a coding-agent CLI
-  uninstall     Remove ast-outline from a coding-agent CLI
-  status        Report what's installed where
-  mcp           Run as an MCP (Model Context Protocol) server over stdio
 
 Each command has `--json` for stable schemas and `--compact` for single-line JSON. Pass an unknown flag or no command and the help text prints automatically — there's no "default" command, every operation is explicit.
 
@@ -45,7 +44,11 @@ Stop at the step that answers the question:
    - `ast-outline deps <file> [--depth N]`: forward — what `<file>` imports (transitively).
    - `ast-outline reverse-deps <file> [--depth N]`: backward — who imports `<file>`. Use before refactoring to know the blast radius.
    - `ast-outline cycles [<dir>]`: import cycles via Tarjan SCC. Exits non-zero when cycles exist (CI gate).
-   - `ast-outline graph [<dir>] --format text|json|dot|dsm`: emit the full graph. `dsm` is a Design Structure Matrix sorted by Lakos level — visual cycle/inversion spotter.
+   - `ast-outline graph [<dir>]`: emit the full graph (text). Add `--json` for `ast-outline.graph.v1`.
+
+**Path type expectations:**
+- `deps`, `reverse-deps` → expect a **file** path
+- `graph`, `cycles` → expect a **directory** (repo root)
 
 Fall back to a full read only when you need context beyond the body `show` returned. If the outline header contains `# WARNING: N parse errors`, the outline for that file is partial — read the source directly for the affected region.
 "#;
@@ -54,7 +57,7 @@ Fall back to a full read only when you need context beyond the body `show` retur
 /// `AGENT_PROMPT` at install time to produce `SKILL.md`. Description is
 /// what Claude Code uses for skill discovery / routing — keep it
 /// action-oriented and accurate.
-pub const SKILL_FRONTMATTER: &str = "---\nname: ast-outline\ndescription: Fast AST-based structural outline for source code. Use to explore unfamiliar directories, list a file's symbols without reading bodies, jump to a specific function/class, find subclasses or implementations, search a repo by symbol or behaviour, or extract a package's true public API. Prefer this over reading whole files when you only need shape.\nuser-invocable: true\n---\n\n";
+pub const SKILL_FRONTMATTER: &str = "---\nname: ast-outline\ndescription: Fast AST-based structural outline for source code. Use to explore unfamiliar directories, list a file's symbols without reading bodies, jump to a specific function/class, find subclasses or implementations, search a repo by symbol or behaviour, or extract a package's true public API, or analyze file-level dependencies. Prefer this over reading whole files when you only need shape.\nuser-invocable: true\n---\n\n";
 
 pub fn agent_skill_md() -> String {
     format!("{}{}", SKILL_FRONTMATTER, AGENT_PROMPT)

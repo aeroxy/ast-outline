@@ -4,7 +4,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::deps::dsm;
 use crate::deps::render;
 use crate::deps::scc;
 use crate::deps::traverse;
@@ -18,6 +17,13 @@ pub fn run_deps(
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
+    if file.is_dir() {
+        eprintln!(
+            "# note: `deps` expects a file, not a directory.\n  \
+             Use `ast-outline graph <dir>` to visualize the full dependency graph."
+        );
+        return 2;
+    }
     let root = match find_root_for_with_cache(file) {
         Ok(r) => r,
         Err(e) => {
@@ -59,6 +65,13 @@ pub fn run_reverse_deps(
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
+    if file.is_dir() {
+        eprintln!(
+            "# note: `reverse-deps` expects a file, not a directory.\n  \
+             Use `ast-outline graph <dir>` to visualize the full dependency graph."
+        );
+        return 2;
+    }
     let root = match find_root_for_with_cache(file) {
         Ok(r) => r,
         Err(e) => {
@@ -144,11 +157,22 @@ pub fn run_cycles(
 
 pub fn run_graph(
     path: &Path,
-    format: &str,
+    json: bool,
     include_external: bool,
     pretty: bool,
     rebuild: bool,
 ) -> i32 {
+    // `graph` expects a directory (repo root), not a file.
+    // Give a helpful hint if the user passes a file path.
+    if path.is_file() {
+        eprintln!(
+            "# note: `graph` expects a directory, not a file.\n\
+             For per-file dependency analysis, use:\n  \
+             ast-outline deps <file>       # what this file imports\n  \
+             ast-outline reverse-deps <file>  # who imports this file"
+        );
+        return 2;
+    }
     let cwd = current_dir_or_dot();
     let (root, scope) = match resolve_dir_root_and_scope(path, &cwd) {
         Ok(rs) => rs,
@@ -169,21 +193,10 @@ pub fn run_graph(
     } else {
         full.subgraph_for_scope(&scope)
     };
-    match format {
-        "text" => print!("{}", render::render_graph_text(&graph)),
-        "dot" => print!("{}", render::render_graph_dot(&graph)),
-        "dsm" => {
-            let dsm = dsm::build(&graph);
-            print!("{}", render::render_graph_dsm(&graph, &dsm));
-        }
-        "json" => println!("{}", render::render_graph_json(&graph, include_external, pretty)),
-        other => {
-            eprintln!(
-                "# note: unknown --format '{}'. Expected text|json|dot|dsm.",
-                other
-            );
-            return 2;
-        }
+    if json {
+        println!("{}", render::render_graph_json(&graph, include_external, pretty));
+    } else {
+        print!("{}", render::render_graph_text(&graph));
     }
     0
 }

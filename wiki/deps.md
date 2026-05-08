@@ -20,7 +20,7 @@ build_graph(root):
 deps <file>:                        forward BFS over `graph.forward`
 reverse-deps <file>:                graph.reverse_adjacency() (computed on-demand) + BFS
 cycles:                             iterative Tarjan SCC over the compact node-index graph
-graph --format text|json|dot|dsm:   render_*
+graph:                              render_graph_text / render_graph_json
 
 find-related (when cache exists):
   semantic top-(K×5) → dep-neighbour boost (1.40× / 1.20×) → top-K
@@ -41,9 +41,8 @@ src/deps/
 ├── manifest.rs      go.mod / tsconfig.json / Cargo.toml parsing
 ├── scc.rs           iterative Tarjan SCC (~80 lines, no petgraph)
 ├── traverse.rs      forward_bfs / reverse_bfs / neighbourhood_depths
-├── dsm.rs           Design Structure Matrix builder
 ├── cache.rs         disk persistence at .ast-outline/deps/graph.bin
-├── render.rs        text / JSON / DOT / DSM renderers (colorized)
+├── render.rs        text / JSON renderers
 ├── cli.rs           run_deps / run_reverse_deps / run_cycles / run_graph
 └── mcp.rs           MCP wrappers
 ```
@@ -107,19 +106,6 @@ Output: `Vec<Cycle>`. Filter rule:
 - All others dropped.
 
 Cycles sort by member count descending; members within each cycle sort lexicographically — stable for diffs and snapshot tests.
-
-## Design Structure Matrix
-
-`src/deps/dsm.rs` builds a square `n × n` boolean matrix where `cells[i][j] = true` iff `files[i]` imports `files[j]`. Files sort by Lakos level (longest path from a leaf), then lexicographically.
-
-The renderer in `src/deps/render.rs::render_graph_dsm` colours cells:
-
-- **`X` above the diagonal in red/bold** — the file at `i` (lower level) imports a file at `j` (higher level). Architectural inversion. Surfaces cycles and layering violations at a glance.
-- **`X` below the diagonal in green** — clean downstream import.
-- **`·` on the diagonal** — self-cell.
-- **`.` elsewhere** — no edge.
-
-Lakos-level computation (`compute_levels`) is a Kahn-style peel: nodes with `out_degree = 0` get level 0, then we iteratively decrement out-degrees on their parents and assign `max(neighbour_level) + 1`. Cycle members never reach 0 — they get `max_assigned + 1` so they stay visible at the top of the matrix.
 
 ## Caching
 

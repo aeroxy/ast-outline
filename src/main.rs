@@ -281,13 +281,12 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
-    /// Emit the dep graph (text, JSON, DOT, or DSM matrix).
+    /// Emit the dep graph (text or JSON).
     Graph {
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// One of: text|json|dot|dsm.
-        #[arg(long, default_value = "text")]
-        format: String,
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         include_external: bool,
         #[arg(long)]
@@ -820,14 +819,14 @@ fn main() {
             }
             Commands::Graph {
                 path,
-                format,
+                json,
                 include_external,
                 rebuild,
                 compact,
             } => {
                 let exit = crate::deps::cli::run_graph(
                     path,
-                    format,
+                    *json,
                     *include_external,
                     !(*compact),
                     *rebuild,

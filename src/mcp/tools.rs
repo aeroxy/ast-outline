@@ -153,12 +153,12 @@ pub fn list() -> Value {
             },
             {
                 "name": "graph",
-                "description": "Emit the file-level dependency graph. `format` is one of `text` (default), `json` (schema `ast-outline.graph.v1`), `dot` (GraphViz), or `dsm` (Design Structure Matrix sorted by Lakos level — great for spotting cycles visually).",
+                "description": "Emit the file-level dependency graph. Returns text by default; set `json: true` for `ast-outline.graph.v1`.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "path":             { "type": "string",  "description": "Repo root (default \".\")." },
-                        "format":           { "type": "string",  "description": "text|json|dot|dsm.", "default": "text" },
+                        "json":             { "type": "boolean", "description": "Return JSON (schema `ast-outline.graph.v1`) instead of text." },
                         "include_external": { "type": "boolean", "description": "Include unresolved imports in JSON output." },
                         "rebuild":          { "type": "boolean" }
                     }
@@ -499,7 +499,7 @@ struct CyclesArgs {
 #[derive(Deserialize, Default)]
 struct GraphArgs {
     #[serde(default = "default_path")] path: PathBuf,
-    #[serde(default = "default_format")] format: String,
+    #[serde(default)] json: bool,
     #[serde(default)] include_external: bool,
     #[serde(default)] rebuild: bool,
 }
@@ -508,7 +508,6 @@ fn default_depth() -> usize { 3 }
 fn default_limit() -> usize { 200 }
 fn default_min_size() -> usize { 2 }
 fn default_path() -> PathBuf { PathBuf::from(".") }
-fn default_format() -> String { "text".to_string() }
 
 fn run_deps(args: Value) -> CallResult {
     let a: DepsArgs = match serde_json::from_value(args) {
@@ -595,15 +594,10 @@ fn run_graph(args: Value) -> CallResult {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
-    let body = match a.format.as_str() {
-        "text" => crate::deps::render::render_graph_text(&graph),
-        "dot" => crate::deps::render::render_graph_dot(&graph),
-        "dsm" => {
-            let dsm = crate::deps::dsm::build(&graph);
-            crate::deps::render::render_graph_dsm(&graph, &dsm)
-        }
-        "json" => crate::deps::render::render_graph_json(&graph, a.include_external, true),
-        other => return CallResult::Error(format!("unknown format '{}'", other)),
+    let body = if a.json {
+        crate::deps::render::render_graph_json(&graph, a.include_external, true)
+    } else {
+        crate::deps::render::render_graph_text(&graph)
     };
     CallResult::Text(body)
 }

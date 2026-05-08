@@ -12,7 +12,6 @@
 
 pub mod cache;
 pub mod cli;
-pub mod dsm;
 pub mod extract;
 pub mod graph;
 pub mod manifest;

@@ -175,39 +175,11 @@ fn go_module_prefix_strips_correctly() {
 // ---- Graph emission ----
 
 #[test]
-fn graph_dot_format_compiles() {
-    let s = run_ok(&[
-        "graph",
-        "tests/fixtures/deps/rust_simple",
-        "--format",
-        "dot",
-        "--rebuild",
-    ]);
-    assert!(s.starts_with("digraph deps"), "DOT header missing:\n{s}");
-    assert!(s.contains("->"), "no edges in DOT:\n{s}");
-    assert!(s.trim_end().ends_with('}'), "missing closing brace:\n{s}");
-}
-
-#[test]
-fn graph_dsm_matrix_renders() {
-    let s = run_ok(&[
-        "graph",
-        "tests/fixtures/deps/rust_simple",
-        "--format",
-        "dsm",
-        "--rebuild",
-    ]);
-    assert!(s.contains("DSM"), "DSM header missing:\n{s}");
-    assert!(s.contains("Legend"), "DSM legend missing:\n{s}");
-}
-
-#[test]
 fn graph_json_carries_schema() {
     let s = run_ok(&[
         "graph",
         "tests/fixtures/deps/rust_simple",
-        "--format",
-        "json",
+        "--json",
         "--rebuild",
     ]);
     assert!(
@@ -225,15 +197,13 @@ fn cache_round_trip_returns_same_graph() {
     let s1 = run_ok(&[
         "graph",
         "tests/fixtures/deps/rust_simple",
-        "--format",
-        "json",
+        "--json",
         "--rebuild",
     ]);
     let s2 = run_ok(&[
         "graph",
         "tests/fixtures/deps/rust_simple",
-        "--format",
-        "json",
+        "--json",
     ]);
     // Strip `built_at` since it differs run-to-run.
     let extract = |s: &str| {
@@ -254,15 +224,13 @@ fn graph_build_is_idempotent() {
     let s1 = run_ok(&[
         "graph",
         "tests/fixtures/deps/python_pkg",
-        "--format",
-        "json",
+        "--json",
         "--rebuild",
     ]);
     let s2 = run_ok(&[
         "graph",
         "tests/fixtures/deps/python_pkg",
-        "--format",
-        "json",
+        "--json",
         "--rebuild",
     ]);
     let extract = |s: &str| {

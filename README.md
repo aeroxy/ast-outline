@@ -21,7 +21,7 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 
 1. **Shape over bytes.** `outline` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
-3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/deps/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph --format dsm` renders a Design Structure Matrix that surfaces architectural inversions at a glance.
+3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/deps/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
 4. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
 5. **Twelve native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-outline install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
 
@@ -168,7 +168,8 @@ ast-outline implements IDamageable src/
 ast-outline deps src/auth.rs --depth 2  # what auth.rs imports (transitively)
 ast-outline reverse-deps src/auth.rs    # who imports auth.rs (refactor blast radius)
 ast-outline cycles                      # find import cycles via Tarjan SCC
-ast-outline graph . --format dsm        # Design Structure Matrix
+ast-outline graph .                     # full dependency graph (text)
+ast-outline graph . --json              # same, as JSON (ast-outline.graph.v1)
 
 # Hybrid BM25 + dense semantic search (builds an index on first call)
 ast-outline search "how does login work"
@@ -366,7 +367,7 @@ changes, so downstream tooling can guard on it:
 | `ast-outline.deps.v1` | `deps --json` |
 | `ast-outline.reverse-deps.v1` | `reverse-deps --json` |
 | `ast-outline.cycles.v1` | `cycles --json` |
-| `ast-outline.graph.v1` | `graph --format json` |
+| `ast-outline.graph.v1` | `graph --json` |
 | `ast-outline.search.v1` | `search --json` |
 | `ast-outline.related.v1` | `find-related --json` |
 | `ast-outline.index-stats.v1` | `index --stats --json` |
@@ -396,7 +397,7 @@ tools that map 1:1 to the CLI commands:
 | `deps`         | `ast-outline deps <file>`                | text, or `ast-outline.deps.v1` with `json: true` |
 | `reverse_deps` | `ast-outline reverse-deps <file>`        | text, or `ast-outline.reverse-deps.v1` with `json: true` |
 | `cycles`       | `ast-outline cycles [path]`              | text, or `ast-outline.cycles.v1` with `json: true` |
-| `graph`        | `ast-outline graph [path]`               | text by default; `format: "json"|"dot"|"dsm"` for other shapes |
+| `graph`        | `ast-outline graph [path]`               | text by default; `json: true` for `ast-outline.graph.v1` |
 | `search`       | `ast-outline search "<query>"`           | text, or `ast-outline.search.v1` with `json: true` |
 | `find_related` | `ast-outline find-related <file>:<line>` | text, or `ast-outline.related.v1` with `json: true` |
 | `index`        | `ast-outline index`                      | text, or `ast-outline.index-stats.v1` with `json: true` |
@@ -468,8 +469,8 @@ For more on what gets indexed (the five filter layers, `.ast-outline-ignore` syn
 ast-outline deps src/auth.rs --depth 2          # what does auth.rs pull in?
 ast-outline reverse-deps src/auth.rs            # who imports auth.rs? (refactor blast radius)
 ast-outline cycles                              # find import cycles via Tarjan SCC (exit 3 if any)
-ast-outline graph . --format dsm                # Design Structure Matrix sorted by Lakos level
-ast-outline graph . --format dot | dot -Tpng    # GraphViz visualization
+ast-outline graph .                              # full dependency graph (text)
+ast-outline graph . --json                      # same, as JSON (ast-outline.graph.v1)
 ```
 
 All four commands share one dep graph cached at `.ast-outline/deps/graph.bin`. First call builds it (~hundreds of ms for typical repos via the same `ignore`-respecting walk used by search); subsequent calls reuse it via mtime-based delta detection, with `--rebuild` to force a fresh build.

@@ -131,13 +131,6 @@ impl DepGraph {
         rev
     }
 
-    /// All known files in deterministic order.
-    pub fn files(&self) -> Vec<PathBuf> {
-        let mut v: Vec<PathBuf> = self.forward.keys().cloned().collect();
-        v.sort();
-        v
-    }
-
     /// Edges sorted by (source, target) for stable diffs.
     pub fn sorted_edges(&self) -> Vec<(PathBuf, PathBuf, ImportKind)> {
         let mut all = Vec::new();
