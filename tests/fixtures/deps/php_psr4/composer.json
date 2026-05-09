@@ -1,0 +1,8 @@
+{
+  "name": "ast-outline/php-psr4-fixture",
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/"
+    }
+  }
+}

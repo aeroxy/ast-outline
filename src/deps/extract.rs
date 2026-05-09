@@ -46,6 +46,9 @@ pub fn extract(path: &Path, lang: Lang) -> Vec<RawImport> {
         Lang::Kotlin => extract_kotlin(&src),
         Lang::CSharp => extract_csharp(&src),
         Lang::Go => extract_go(&src),
+        Lang::Cpp => extract_cpp(&src),
+        Lang::Php => extract_php(&src),
+        Lang::Ruby => extract_ruby(&src),
         Lang::Other => Vec::new(),
     }
 }
@@ -665,6 +668,373 @@ fn consume_go_spec<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
         local_name: name,
         raw_path: Some(stripped),
     });
+}
+
+// ---- C++ ----
+
+fn extract_cpp(src: &str) -> Vec<RawImport> {
+    let lang = SupportLang::Cpp;
+    let ast = lang.ast_grep(src);
+    let root = ast.root();
+    let mut out = Vec::new();
+    _walk_cpp(&root, &mut out);
+    out
+}
+
+fn _walk_cpp<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    for c in node.children() {
+        if !c.is_named() {
+            continue;
+        }
+        let kind = c.kind();
+        let kind = kind.as_ref();
+        if kind == "preproc_include" {
+            consume_cpp_include(&c, out);
+        } else if matches!(
+            kind,
+            "namespace_definition"
+                | "linkage_specification"
+                | "translation_unit"
+                | "preproc_ifdef"
+                | "preproc_if"
+                | "preproc_else"
+                | "preproc_elif"
+        ) {
+            // Headers commonly wrap includes in `#ifndef … #endif` guards or
+            // `extern "C" { … }`; namespaces also occasionally hold them.
+            _walk_cpp(&c, out);
+        }
+    }
+}
+
+fn consume_cpp_include<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    let line = (node.start_pos().line() + 1) as u32;
+    let stmt = node.text().into_owned();
+    for sub in node.children() {
+        if !sub.is_named() {
+            continue;
+        }
+        let k = sub.kind();
+        let k = k.as_ref();
+        if k == "string_literal" {
+            // `#include "local.h"` — local include, resolve relative.
+            let raw = sub.text().into_owned();
+            let path = raw.trim().trim_matches('"').to_string();
+            if path.is_empty() {
+                continue;
+            }
+            let spec = if path.starts_with("./") || path.starts_with("../") {
+                path.clone()
+            } else {
+                format!("./{}", path)
+            };
+            out.push(RawImport {
+                spec,
+                kind: ImportKind::Bare,
+                line,
+                statement: stmt.clone(),
+                local_name: None,
+                raw_path: Some(path),
+            });
+        } else if k == "system_lib_string" {
+            // `#include <vector>` — system header. Emit so it shows up in
+            // external listings; the resolver won't find it inside the project.
+            let raw = sub.text().into_owned();
+            let inner = raw.trim().trim_start_matches('<').trim_end_matches('>').to_string();
+            if inner.is_empty() {
+                continue;
+            }
+            out.push(RawImport {
+                spec: inner.clone(),
+                kind: ImportKind::Bare,
+                line,
+                statement: stmt.clone(),
+                local_name: None,
+                raw_path: Some(format!("<{}>", inner)),
+            });
+        }
+    }
+}
+
+// ---- PHP ----
+
+fn extract_php(src: &str) -> Vec<RawImport> {
+    let lang = SupportLang::Php;
+    let ast = lang.ast_grep(src);
+    let root = ast.root();
+    let mut out = Vec::new();
+    _walk_php(&root, &mut out);
+    out
+}
+
+fn _walk_php<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    for c in node.children() {
+        if !c.is_named() {
+            continue;
+        }
+        let kind = c.kind();
+        let kind = kind.as_ref();
+        if kind == "namespace_use_declaration" {
+            consume_php_use(&c, out);
+            continue;
+        }
+        if matches!(
+            kind,
+            "require_expression"
+                | "require_once_expression"
+                | "include_expression"
+                | "include_once_expression"
+        ) {
+            consume_php_require(&c, out);
+            continue;
+        }
+        // Imports can appear inside any nesting structure (class bodies,
+        // method bodies, conditionals). Recurse through every named child;
+        // the cost is negligible and matching is type-driven.
+        _walk_php(&c, out);
+    }
+}
+
+fn consume_php_use<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    let line = (node.start_pos().line() + 1) as u32;
+    let stmt = node.text().into_owned();
+    // `use App\Core\Foo;`, `use App\Core\Foo as Bar;`,
+    // `use App\Core\{Foo, Bar};` — walk children for clauses.
+    for sub in node.children() {
+        if !sub.is_named() {
+            continue;
+        }
+        let k = sub.kind();
+        let k = k.as_ref();
+        if k == "namespace_use_clause" || k == "namespace_use_group_clause" {
+            let text = sub.text().into_owned();
+            let (path, alias) = match text.split_once(" as ") {
+                Some((p, a)) => (p.trim().to_string(), Some(a.trim().to_string())),
+                None => (text.trim().to_string(), None),
+            };
+            let path = path.trim_start_matches('\\').to_string();
+            if path.is_empty() {
+                continue;
+            }
+            out.push(RawImport {
+                spec: path.replace('\\', "/"),
+                kind: ImportKind::Use,
+                line,
+                statement: stmt.clone(),
+                local_name: alias,
+                raw_path: Some(path),
+            });
+        } else if k == "namespace_use_group" {
+            // `use App\Core\{Foo, Bar};` — find the prefix qualified_name and
+            // each member clause inside the group.
+            let mut prefix: Option<String> = None;
+            for inner in sub.children() {
+                if !inner.is_named() {
+                    continue;
+                }
+                let ik = inner.kind();
+                let ik = ik.as_ref();
+                if (ik == "qualified_name" || ik == "namespace_name") && prefix.is_none() {
+                    prefix = Some(inner.text().into_owned().trim_start_matches('\\').to_string());
+                } else if ik == "namespace_use_group_clause" || ik == "namespace_use_clause" {
+                    let text = inner.text().into_owned();
+                    let (item, alias) = match text.split_once(" as ") {
+                        Some((p, a)) => (p.trim().to_string(), Some(a.trim().to_string())),
+                        None => (text.trim().to_string(), None),
+                    };
+                    let item = item.trim_start_matches('\\').to_string();
+                    let full = match &prefix {
+                        Some(p) if !p.is_empty() => format!("{}\\{}", p, item),
+                        _ => item,
+                    };
+                    if full.is_empty() {
+                        continue;
+                    }
+                    out.push(RawImport {
+                        spec: full.replace('\\', "/"),
+                        kind: ImportKind::Use,
+                        line,
+                        statement: stmt.clone(),
+                        local_name: alias,
+                        raw_path: Some(full),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn consume_php_require<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    let line = (node.start_pos().line() + 1) as u32;
+    let stmt = node.text().into_owned();
+    // The argument is a string child — but `require('foo.php')` wraps the
+    // string in a `parenthesized_expression`, so we may need to descend one
+    // level. We bail on anything that's not a literal (concatenation,
+    // variable, etc.) since dynamic paths can't be resolved statically.
+    for sub in node.children() {
+        if !sub.is_named() {
+            continue;
+        }
+        if let Some(path) = _php_extract_string_arg(&sub) {
+            if path.is_empty() {
+                continue;
+            }
+            // Skip dynamic paths: __DIR__ concatenation and `$var`
+            // interpolation never produce a static target.
+            if path.contains("__DIR__") || path.contains('$') {
+                continue;
+            }
+            let spec = if path.starts_with("./") || path.starts_with("../") {
+                path.clone()
+            } else {
+                format!("./{}", path)
+            };
+            out.push(RawImport {
+                spec,
+                kind: ImportKind::Bare,
+                line,
+                statement: stmt.clone(),
+                local_name: None,
+                raw_path: Some(path),
+            });
+            break;
+        }
+    }
+}
+
+/// Pull the literal path out of a require/include argument, descending
+/// through one level of `parenthesized_expression` if present. Returns
+/// None for any non-literal form (concatenation, variable, function call).
+fn _php_extract_string_arg<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
+    let k = node.kind();
+    let k = k.as_ref();
+    if k == "string" || k == "encapsed_string" {
+        let raw = node.text().into_owned();
+        return Some(
+            raw.trim()
+                .trim_matches('\'')
+                .trim_matches('"')
+                .to_string(),
+        );
+    }
+    if k == "parenthesized_expression" {
+        for inner in node.children() {
+            if !inner.is_named() {
+                continue;
+            }
+            if let Some(s) = _php_extract_string_arg(&inner) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+// ---- Ruby ----
+
+fn extract_ruby(src: &str) -> Vec<RawImport> {
+    let lang = SupportLang::Ruby;
+    let ast = lang.ast_grep(src);
+    let root = ast.root();
+    let mut out = Vec::new();
+    _walk_ruby(&root, &mut out);
+    out
+}
+
+fn _walk_ruby<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    for c in node.children() {
+        if !c.is_named() {
+            continue;
+        }
+        if c.kind().as_ref() == "call" {
+            consume_ruby_call(&c, out);
+            continue;
+        }
+        // `require_relative` calls can appear inside any block (class body,
+        // method body, if/unless, begin/rescue). Walk the full tree —
+        // `consume_ruby_call` filters out non-import calls cheaply.
+        _walk_ruby(&c, out);
+    }
+}
+
+fn consume_ruby_call<'a, D: Doc>(node: &Node<'a, D>, out: &mut Vec<RawImport>) {
+    // tree-sitter-ruby exposes `method` and `arguments` fields on `call`.
+    let method = match node.field("method") {
+        Some(m) => m.text().into_owned(),
+        None => return,
+    };
+    if !matches!(
+        method.as_str(),
+        "require" | "require_relative" | "load" | "autoload"
+    ) {
+        return;
+    }
+    let args = match node.field("arguments") {
+        Some(a) => a,
+        None => return,
+    };
+    // Collect named argument children in order. `autoload(const, file)` puts
+    // the path in the SECOND positional slot; the rest put it first. Picking
+    // by position handles `autoload "Foo", "path"` (where the const name is a
+    // String) — naive "first string wins" would grab "Foo".
+    let positional: Vec<_> = args.children().filter(|a| a.is_named()).collect();
+    let path_arg = if method == "autoload" {
+        positional.get(1)
+    } else {
+        positional.first()
+    };
+    let Some(path_arg) = path_arg else { return };
+    if path_arg.kind().as_ref() != "string" {
+        // Non-literal argument (variable, method call, interpolated string) —
+        // can't resolve statically.
+        return;
+    }
+    let raw = path_arg.text().into_owned();
+    let path = raw
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"')
+        .to_string();
+    if path.is_empty() {
+        return;
+    }
+    let line = (node.start_pos().line() + 1) as u32;
+    let stmt = node.text().into_owned();
+
+    if method == "require_relative" {
+        // Ruby convention is to omit the `.rb` extension; append it so the
+        // resolver's `target.is_file()` check finds the actual file.
+        let path_with_ext = if path.ends_with(".rb") {
+            path.clone()
+        } else {
+            format!("{}.rb", path)
+        };
+        let spec = if path_with_ext.starts_with("./") || path_with_ext.starts_with("../") {
+            path_with_ext.clone()
+        } else {
+            format!("./{}", path_with_ext)
+        };
+        out.push(RawImport {
+            spec,
+            kind: ImportKind::Bare,
+            line,
+            statement: stmt,
+            local_name: None,
+            raw_path: Some(path),
+        });
+    } else {
+        // `require 'gem'`, `load`, `autoload` — these target $LOAD_PATH or
+        // gems, which live outside the repo. Emit a non-resolvable spec so
+        // they show up in the external list with the original path.
+        out.push(RawImport {
+            spec: path.clone(),
+            kind: ImportKind::Bare,
+            line,
+            statement: stmt,
+            local_name: None,
+            raw_path: Some(path),
+        });
+    }
 }
 
 #[cfg(test)]

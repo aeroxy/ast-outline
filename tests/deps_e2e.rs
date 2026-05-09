@@ -217,6 +217,204 @@ fn cache_round_trip_returns_same_graph() {
     assert_eq!(edges1, edges2);
 }
 
+// ---- PHP ----
+
+#[test]
+fn php_psr4_use_resolves() {
+    // `use App\Account;` in src/User.php resolves to src/Account.php via
+    // the composer.json psr-4 mapping `App\\: src/`.
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/php_psr4/src/User.php",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("Account.php"),
+        "expected Account.php in deps:\n{s}"
+    );
+}
+
+#[test]
+fn php_require_literal_resolves_relative() {
+    // `require_once 'helpers.php'` inside src/User.php resolves to
+    // src/helpers.php (resolver treats it as relative to the source file).
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/php_psr4/src/User.php",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("helpers.php"),
+        "expected helpers.php in deps:\n{s}"
+    );
+}
+
+#[test]
+fn php_require_parenthesized_resolves() {
+    // Regression: `require_once('utils.php')` wraps the string in a
+    // `parenthesized_expression`. The extractor must descend into it.
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/php_psr4/src/User.php",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("utils.php"),
+        "expected utils.php from parenthesized require_once:\n{s}"
+    );
+}
+
+#[test]
+fn php_reverse_deps() {
+    let s = run_ok(&[
+        "reverse-deps",
+        "tests/fixtures/deps/php_psr4/src/Account.php",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("User.php"),
+        "expected User.php as importer:\n{s}"
+    );
+}
+
+// ---- C++ ----
+
+#[test]
+fn cpp_local_include_resolves() {
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/cpp_basic/src/main.cpp",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(s.contains("lib.h"), "expected lib.h in deps:\n{s}");
+}
+
+#[test]
+fn cpp_transitive_include() {
+    // main.cpp → lib.h → util.h
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/cpp_basic/src/main.cpp",
+        "--depth",
+        "2",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("util.h"),
+        "expected util.h reachable transitively:\n{s}"
+    );
+}
+
+#[test]
+fn cpp_system_header_is_external() {
+    // `<vector>` and `<string>` are system headers; they should appear in
+    // the external-imports listing rather than as resolved edges.
+    let s = run_ok(&[
+        "graph",
+        "tests/fixtures/deps/cpp_basic",
+        "--include-external",
+        "--json",
+        "--rebuild",
+    ]);
+    let v: serde_json::Value = serde_json::from_str(&s).expect("graph json");
+    let externals = v["external"].as_array().expect("external array");
+    let main_specs: Vec<String> = externals
+        .iter()
+        .filter(|e| e["from"].as_str().is_some_and(|p| p.contains("main.cpp")))
+        .filter_map(|e| e["spec"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(
+        main_specs.iter().any(|s| s.contains("vector")),
+        "expected <vector> external in main.cpp:\n{:?}",
+        main_specs
+    );
+    // Local include should NOT appear in externals.
+    assert!(
+        !main_specs.iter().any(|s| s.contains("lib.h")),
+        "lib.h should be a resolved edge, not external:\n{:?}",
+        main_specs
+    );
+}
+
+#[test]
+fn cpp_reverse_deps() {
+    let s = run_ok(&[
+        "reverse-deps",
+        "tests/fixtures/deps/cpp_basic/src/util.h",
+        "--depth",
+        "2",
+        "--rebuild",
+    ]);
+    // util.h is included by lib.h and util.cpp; lib.h is included by main.cpp.
+    assert!(s.contains("lib.h"), "expected lib.h as importer:\n{s}");
+    assert!(s.contains("util.cpp"), "expected util.cpp as importer:\n{s}");
+}
+
+// ---- Ruby ----
+
+#[test]
+fn ruby_require_relative_resolves() {
+    let s = run_ok(&[
+        "deps",
+        "tests/fixtures/deps/ruby_relative/main.rb",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(
+        s.contains("helpers.rb"),
+        "expected helpers.rb in deps:\n{s}"
+    );
+}
+
+#[test]
+fn ruby_gem_require_is_external() {
+    // `require 'json'` should not resolve to any project file. Verify it
+    // appears in the external-imports listing instead.
+    let s = run_ok(&[
+        "graph",
+        "tests/fixtures/deps/ruby_relative",
+        "--include-external",
+        "--json",
+        "--rebuild",
+    ]);
+    let v: serde_json::Value = serde_json::from_str(&s).expect("graph json");
+    let externals = v["external"].as_array().expect("external array");
+    let main_specs: Vec<String> = externals
+        .iter()
+        .filter(|e| e["from"].as_str().is_some_and(|p| p.contains("main.rb")))
+        .filter_map(|e| e["spec"].as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(
+        main_specs.iter().any(|s| s == "json"),
+        "expected `json` as external in main.rb:\n{:?}",
+        main_specs
+    );
+}
+
+#[test]
+fn ruby_reverse_deps() {
+    let s = run_ok(&[
+        "reverse-deps",
+        "tests/fixtures/deps/ruby_relative/helpers.rb",
+        "--depth",
+        "1",
+        "--rebuild",
+    ]);
+    assert!(s.contains("main.rb"), "expected main.rb as importer:\n{s}");
+    assert!(s.contains("lib.rb"), "expected lib.rb as importer:\n{s}");
+}
+
 // ---- Idempotency ----
 
 #[test]

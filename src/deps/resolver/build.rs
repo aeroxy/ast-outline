@@ -40,6 +40,9 @@ pub enum Lang {
     Kotlin,
     CSharp,
     Go,
+    Cpp,
+    Php,
+    Ruby,
     Other,
 }
 
@@ -58,6 +61,9 @@ impl Lang {
             "kt" | "kts" => Self::Kotlin,
             "cs" => Self::CSharp,
             "go" => Self::Go,
+            "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hxx" | "hh" | "h++" | "h" => Self::Cpp,
+            "php" => Self::Php,
+            "rb" => Self::Ruby,
             _ => return None,
         };
         // `Cargo.toml`/`go.mod` etc. don't go through here.

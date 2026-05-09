@@ -3,6 +3,7 @@
 //! - `go.mod`: extract `module <prefix>` directive.
 //! - `tsconfig.json`: extract `compilerOptions.paths` + `baseUrl`.
 //! - `Cargo.toml`: extract `[package].name` (with hyphen→underscore).
+//! - `composer.json`: extract `autoload.psr-4` map (PHP).
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,9 @@ pub struct ProjectAliases {
     pub go_module: Option<String>,
     /// TS path aliases — `(prefix, replacement)` pairs.
     pub ts_path_aliases: Vec<(String, String)>,
+    /// PHP PSR-4 namespace prefix → directory pairs from `composer.json`.
+    /// Prefixes are normalised to slash form (e.g. `App/` from `App\\`).
+    pub php_psr4: Vec<(String, String)>,
 }
 
 pub fn detect_aliases(root: &Path) -> ProjectAliases {
@@ -23,6 +27,7 @@ pub fn detect_aliases(root: &Path) -> ProjectAliases {
         rust_crate_name: parse_cargo_name(&root.join("Cargo.toml")),
         go_module: parse_go_module(&root.join("go.mod")),
         ts_path_aliases: parse_tsconfig_paths(&root.join("tsconfig.json")),
+        php_psr4: parse_composer_psr4(&root.join("composer.json")),
     }
 }
 
@@ -150,6 +155,55 @@ fn strip_jsonc(s: &str) -> String {
         i += 1;
     }
     cleaned
+}
+
+/// Parse `autoload.psr-4` from `composer.json`. Returns prefix → directory
+/// pairs ready for the resolver. Prefixes are converted from PHP's
+/// backslash-separated form (`App\\`) to the slash form (`App/`) used
+/// elsewhere in the deps subsystem.
+///
+/// PSR-4 allows the target to be a string or an array of strings (multiple
+/// directories per prefix). For arrays, we emit one `(prefix, dir)` entry per
+/// directory; the resolver tries them in order until one yields a hit.
+pub fn parse_composer_psr4(path: &Path) -> Vec<(String, String)> {
+    let Ok(s) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for section in ["autoload", "autoload-dev"] {
+        let Some(autoload) = v.get(section) else { continue };
+        let Some(psr4) = autoload.get("psr-4").and_then(|x| x.as_object()) else {
+            continue;
+        };
+        for (prefix, target) in psr4 {
+            // Normalise: `App\\` → `App/`.
+            let prefix_norm = prefix.replace('\\', "/");
+            let dirs: Vec<String> = if let Some(s) = target.as_str() {
+                vec![s.to_string()]
+            } else if let Some(arr) = target.as_array() {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            } else {
+                continue;
+            };
+            for dir in dirs {
+                if dir.is_empty() {
+                    continue;
+                }
+                let dir_norm = dir.trim_end_matches('/').to_string();
+                out.push((prefix_norm.clone(), dir_norm));
+            }
+        }
+    }
+    // Longest prefix wins on tie — sort descending so the resolver picks the
+    // most specific match first. (Stable sort preserves array order within
+    // a prefix, so multi-dir entries try directories in declaration order.)
+    out.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    out
 }
 
 /// Best-effort discovery of additional crate roots in a Cargo workspace.

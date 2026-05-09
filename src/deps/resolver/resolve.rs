@@ -28,6 +28,10 @@ pub struct ResolveCtx<'a> {
     /// Keys are bare prefixes (`@app/`); values are the substitution paths
     /// (`src/app/`) that the prefix expands to before suffix lookup.
     pub path_aliases: &'a [(String, String)],
+    /// PHP PSR-4 prefix → directory pairs from `composer.json`. Prefixes are
+    /// already in slash form (`App/`) — see `manifest::parse_composer_psr4`.
+    /// Sorted longest-first so the resolver picks the most specific match.
+    pub php_psr4: &'a [(String, String)],
 }
 
 impl<'a> ResolveCtx<'a> {
@@ -38,6 +42,7 @@ impl<'a> ResolveCtx<'a> {
             lang,
             alias_prefix: None,
             path_aliases: &[],
+            php_psr4: &[],
         }
     }
 }
@@ -158,6 +163,58 @@ pub fn resolve(spec: &str, ctx: &ResolveCtx<'_>, idx: &SuffixIndex) -> Option<Pa
                 return Some(p);
             }
         }
+        return None;
+    }
+
+    // PHP: `use App\Core\Foo;` arrives normalised to `App/Core/Foo`.
+    // Resolution order: PSR-4 prefix → suffix lookup → last-segment fallback.
+    if ctx.lang == Lang::Php {
+        // 1. PSR-4 prefix replacement (longest-first; `php_psr4` is pre-sorted).
+        for (prefix, dir) in ctx.php_psr4 {
+            if let Some(rest) = spec.strip_prefix(prefix.as_str()) {
+                let key = if dir.is_empty() {
+                    rest.to_string()
+                } else {
+                    format!("{}/{}", dir.trim_end_matches('/'), rest)
+                };
+                if let Some(p) = pick_closest(idx.lookup(&key), ctx.from_file) {
+                    return Some(p);
+                }
+                // Direct file existence check — handles cases where the
+                // suffix index doesn't have a matching key (e.g., file at
+                // root is indexed by stem only).
+                let abs = idx.root.join(format!("{}.php", key));
+                if abs.is_file() {
+                    return Some(abs);
+                }
+            }
+        }
+        // 2. Direct suffix lookup — covers projects without composer.json
+        // where the file layout happens to mirror the namespace.
+        if let Some(p) = pick_closest(idx.lookup(spec), ctx.from_file) {
+            return Some(p);
+        }
+        // 3. Last-segment fallback — class name only (e.g. `Foo` from
+        // `App\Core\Foo`). Mirrors the Java nested-class fallback above.
+        if let Some(last) = spec.rsplit('/').next() {
+            if last != spec {
+                if let Some(p) = pick_closest(idx.lookup(last), ctx.from_file) {
+                    return Some(p);
+                }
+            }
+        }
+        return None;
+    }
+
+    // C++: only relative includes resolve. System headers (`<vector>` etc.)
+    // arrive here without a `./` prefix and have no project-local target.
+    if ctx.lang == Lang::Cpp {
+        return None;
+    }
+
+    // Ruby: only `require_relative` resolves. Bare `require 'gem'` and
+    // `load`/`autoload` paths target $LOAD_PATH or installed gems.
+    if ctx.lang == Lang::Ruby {
         return None;
     }
 

@@ -70,6 +70,7 @@ pub fn build_graph(root: &Path) -> Result<DepGraph, DepError> {
                 lang: info.language,
                 alias_prefix: aliases.go_module.as_deref(),
                 path_aliases: &aliases.ts_path_aliases,
+                php_psr4: &aliases.php_psr4,
             };
             for ri in raw_imports {
                 match resolve(&ri.spec, &ctx, &idx) {

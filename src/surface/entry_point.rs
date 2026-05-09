@@ -135,6 +135,18 @@ fn discover_dir(dir: &Path) -> Result<EntryPoint, SurfaceError> {
     if _has_scala_file(dir) {
         return discover_scala(dir);
     }
+    // PHP / Ruby / C++ have no `pub use`-style re-export semantics, so
+    // there's no meaningful per-language surface resolver. Recognise their
+    // manifests so we route to Fallback explicitly (and skip the deeper
+    // probe below) rather than missing the dir entirely.
+    if dir.join("composer.json").is_file()
+        || dir.join("Gemfile").is_file()
+        || dir.join("CMakeLists.txt").is_file()
+    {
+        return Ok(EntryPoint::Fallback {
+            paths: vec![dir.to_path_buf()],
+        });
+    }
     // Probe one level down for a single-package layout
     // (e.g. a repo where the user is at the top and the crate is in `crates/foo`).
     if let Some(found) = _find_nearest_manifest(dir) {
