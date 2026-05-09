@@ -23,8 +23,8 @@ fn run(args: &[&str]) -> (bool, String, String) {
 }
 
 #[test]
-fn outline_typo_path_exits_zero_with_note() {
-    let (ok, stdout, _) = run(&["outline", "/tmp/ast-outline-does-not-exist-xyz"]);
+fn map_typo_path_exits_zero_with_note() {
+    let (ok, stdout, _) = run(&["map", "/tmp/ast-outline-does-not-exist-xyz"]);
     assert!(ok, "must exit 0");
     assert!(
         stdout.contains("# note: path not found:"),
@@ -122,10 +122,10 @@ fn find_related_bad_target_exits_zero_with_note() {
 }
 
 #[test]
-fn happy_path_outline_still_works() {
-    let (ok, stdout, _) = run(&["outline", "src/core.rs"]);
+fn happy_path_map_works() {
+    let (ok, stdout, _) = run(&["map", "src/core.rs"]);
     assert!(ok, "must exit 0");
-    assert!(!stdout.is_empty(), "expected non-empty outline");
+    assert!(!stdout.is_empty(), "expected non-empty map output");
     assert!(
         !stdout.contains("# note: path not found:"),
         "should not emit a path-not-found note for an existing file:\n{stdout}"

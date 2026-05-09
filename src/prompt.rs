@@ -3,7 +3,7 @@ pub const AGENT_PROMPT: &str = r#"## Use `ast-outline` to explore the code
 Usage: ast-outline <COMMAND> [OPTIONS]
 
 Commands:
-  outline       Outline files or directories — signatures with line ranges, no method bodies
+  map           Map files or directories — signatures with line ranges, no method bodies
   show          Extract source of a symbol
   digest        One-page module map
   implements    Find subclasses / implementations
@@ -28,7 +28,7 @@ Stop at the step that answers the question:
 
 1. **Unfamiliar directory** — `ast-outline digest <dir>`: one-page map of every file's types and public methods.
 
-2. **One file's shape** — `ast-outline outline <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read).
+2. **One file's shape** — `ast-outline map <file>`: signatures with line ranges, no bodies (5–10× smaller than a full read).
 
 3. **One method, class, or markdown section** — `ast-outline show <file> <Symbol>`. Suffix matching: `TakeDamage`, or `Player.TakeDamage` when ambiguous. Multiple at once: `ast-outline show Player TakeDamage Heal Die`. For markdown, the symbol is the heading text.
 
@@ -50,7 +50,7 @@ Stop at the step that answers the question:
 - `deps`, `reverse-deps` → expect a **file** path
 - `graph`, `cycles` → expect a **directory** (repo root)
 
-Fall back to a full read only when you need context beyond the body `show` returned. If the outline header contains `# WARNING: N parse errors`, the outline for that file is partial — read the source directly for the affected region.
+Fall back to a full read only when you need context beyond the body `show` returned. If the map header contains `# WARNING: N parse errors`, the map for that file is partial — read the source directly for the affected region.
 "#;
 
 /// YAML frontmatter for the Claude Code skill file. Concatenated with

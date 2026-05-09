@@ -31,7 +31,7 @@ fn run(args: &[&str]) -> String {
 
 #[test]
 fn module_renders_as_namespace() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("namespace Billing"), "module → namespace missing:\n{s}");
     assert!(s.contains("class Account"), "nested class missing:\n{s}");
 }
@@ -41,7 +41,7 @@ fn private_and_protected_visibility_tracked() {
     // The `private`/`protected` tokens between method definitions are
     // not fields on the AST — the adapter tracks them as state in the
     // class-body walk and applies them to every following method.
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("private def secret"), "private method missing:\n{s}");
     assert!(
         s.contains("protected def helper"),
@@ -56,7 +56,7 @@ fn private_and_protected_visibility_tracked() {
 
 #[test]
 fn attr_macros_and_rails_associations_surface() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("attr_accessor"), "attr_accessor missing:\n{s}");
     assert!(s.contains("attr_reader"), "attr_reader missing:\n{s}");
     assert!(s.contains("has_many"), "Rails association missing:\n{s}");
@@ -64,14 +64,14 @@ fn attr_macros_and_rails_associations_surface() {
 
 #[test]
 fn constants_and_singleton_methods_render() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("VERSION"), "constant missing:\n{s}");
     assert!(s.contains("def self.find"), "singleton method missing:\n{s}");
 }
 
 #[test]
 fn class_inheritance_captured() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     // `class User < Account` — both names must appear in the same outline.
     assert!(s.contains("class User"), "subclass missing:\n{s}");
     assert!(s.contains("Account"), "superclass missing in outline:\n{s}");

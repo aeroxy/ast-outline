@@ -15,7 +15,7 @@ mod project_root;
 mod search;
 mod surface;
 
-use crate::core::{DigestOptions, OutlineOptions, ParseResult};
+use crate::core::{DigestOptions, MapOptions, ParseResult};
 
 #[derive(Parser)]
 #[command(name = "ast-outline")]
@@ -28,9 +28,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Outline files or directories — signatures with line ranges, no method bodies.
-    Outline {
-        /// Files or directories to outline.
+    /// Map files or directories — signatures with line ranges, no method bodies.
+    Map {
+        /// Files or directories to map.
         #[arg(num_args = 1..)]
         paths: Vec<PathBuf>,
 
@@ -426,7 +426,7 @@ fn main() {
     };
 
     match &cli.command {
-            Commands::Outline {
+            Commands::Map {
                 paths,
                 no_private,
                 no_fields,
@@ -438,7 +438,7 @@ fn main() {
                 compact,
             } => {
                 let results = walk_and_parse(paths, glob.as_deref());
-                let opts = OutlineOptions {
+                let opts = MapOptions {
                     include_private: !(*no_private),
                     include_fields: !(*no_fields),
                     include_docs: !(*no_docs),
@@ -450,10 +450,10 @@ fn main() {
                 let json_on = *json;
                 let pretty = !(*compact);
                 if json_on {
-                    println!("{}", crate::core::render_json_outline(&results, &opts, pretty));
+                    println!("{}", crate::core::render_json_map(&results, &opts, pretty));
                 } else {
                     for res in results {
-                        println!("{}", crate::core::render_outline(&res, &opts));
+                        println!("{}", crate::core::render_map(&res, &opts));
                         println!();
                     }
                 }
@@ -536,7 +536,7 @@ fn main() {
             } => {
                 let results = walk_and_parse(paths, None);
                 if *json {
-                    let opts = OutlineOptions {
+                    let opts = MapOptions {
                         include_private: *include_private,
                         include_fields: *include_fields,
                         include_docs: true,
@@ -547,7 +547,7 @@ fn main() {
                     };
                     println!(
                         "{}",
-                        crate::core::render_json_outline(&results, &opts, !(*compact))
+                        crate::core::render_json_map(&results, &opts, !(*compact))
                     );
                 } else {
                     let opts = DigestOptions {

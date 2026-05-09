@@ -19,7 +19,7 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 
 `ast-outline` collapses each of those questions into a single command:
 
-1. **Shape over bytes.** `outline` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
+1. **Shape over bytes.** `map` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
 3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/deps/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
 4. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
@@ -91,7 +91,7 @@ For "what does this package actually expose?" — historically the most expensiv
    benches/data/
    *.generated.rs
    ```
-4. **Extension allowlist** — files are only opened if their extension is one ast-outline knows how to parse (the table above for outline/digest/show/implements; a broader set for the search commands).
+4. **Extension allowlist** — files are only opened if their extension is one ast-outline knows how to parse (the table above for map/digest/show/implements; a broader set for the search commands).
 
 Want to see exactly what ast-outline walks? Compare `ast-outline digest some/dir` with `rg --files some/dir` — anything in `rg` but not the digest is being filtered by one of the layers above.
 
@@ -148,12 +148,12 @@ Or add it as a dependency in your Nix flake:
 ## Quick start
 
 ```bash
-# Structural outline of one file
-ast-outline outline path/to/Player.rs
-ast-outline outline path/to/user_service.py
+# Map the structure of one file
+ast-outline map path/to/Player.rs
+ast-outline map path/to/user_service.py
 
-# Outline a whole directory (recurses supported extensions in parallel)
-ast-outline outline src/
+# Map a whole directory (recurses supported extensions in parallel)
+ast-outline map src/
 
 # Print the exact source of one specific method
 ast-outline show Player.cs TakeDamage
@@ -191,7 +191,7 @@ ast-outline index --rebuild  # drop cache and rebuild
 ast-outline prompt >> AGENTS.md
 
 # Machine-readable JSON (stable schema, great for tooling)
-ast-outline outline src/player.rs --json
+ast-outline map src/player.rs --json
 ast-outline digest src/ --json
 ast-outline show Player.cs TakeDamage --json
 ast-outline implements IDamageable src/ --json
@@ -230,7 +230,7 @@ ast-outline status
 Supported targets: `claude-code`, `gemini`, `tabnine`, `cursor`,
 `aider`, `codex`, `copilot`. Claude Code, Gemini, and Tabnine also get
 a tool-call hook that intercepts `Read` on supported source files when
-they exceed `--min-lines` (default 200) and substitutes the outline.
+they exceed `--min-lines` (default 200) and substitutes the map output.
 The other targets receive the prompt only.
 
 ### Claude Code subagent shadowing
@@ -308,7 +308,7 @@ pub struct Declaration  L10-120
 
 `ast-outline show <file> <Symbol>` prints a `# in: ...` breadcrumb
 between the header and the body so you know what the extracted code is
-nested inside, without a second `outline` call:
+nested inside, without a second `map` call:
 
 ```
 # Player.cs:30-48  Game.Player.PlayerController.TakeDamage  (method)
@@ -327,11 +327,11 @@ servers, CI tooling, or any script that needs to consume the data
 programmatically.
 
 ```bash
-ast-outline outline src/player.rs --json    # per-file outline
+ast-outline map src/player.rs --json        # per-file map
 ast-outline digest src/ --json              # digest view
 ast-outline show Player.cs TakeDamage --json
 ast-outline implements IDamageable src/ --json
-ast-outline outline src/ --json --compact   # single-line (no pretty-print)
+ast-outline map src/ --json --compact       # single-line (no pretty-print)
 ```
 
 Every JSON document includes a `schema` field that is bumped on breaking
@@ -393,8 +393,8 @@ tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
 |------|----------------|---------|
-| `outline`      | `ast-outline outline <paths>`            | text, or `ast-outline.outline.v1` with `json: true` |
-| `digest`       | `ast-outline digest <paths>`             | text, or `ast-outline.outline.v1` with `json: true` |
+| `map`          | `ast-outline map <paths>`                | text, or `ast-outline.map.v1` with `json: true` |
+| `digest`       | `ast-outline digest <paths>`             | text, or `ast-outline.map.v1` with `json: true` |
 | `show`         | `ast-outline show <path> <syms>`         | text, or `ast-outline.show.v1` with `json: true` |
 | `implements`   | `ast-outline implements <type> <paths>`  | text, or `ast-outline.implements.v1` with `json: true` |
 | `surface`      | `ast-outline surface [path]`             | text, or `ast-outline.surface.v1` with `json: true` |

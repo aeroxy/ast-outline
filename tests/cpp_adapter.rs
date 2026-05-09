@@ -29,7 +29,7 @@ fn run(args: &[&str]) -> String {
 
 #[test]
 fn class_struct_enum_namespace_all_render() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("namespace geom"), "namespace missing:\n{s}");
     assert!(s.contains("struct Point"), "struct missing:\n{s}");
     assert!(s.contains("enum Color"), "enum missing:\n{s}");
@@ -41,14 +41,14 @@ fn ctor_and_dtor_appear_under_class() {
     // Constructor and destructor are the headline regression case for the
     // C++ adapter: tree-sitter-cpp emits them as `declaration` nodes (not
     // `function_definition`) so the adapter needs an explicit branch.
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("Shape(int sides)"), "ctor missing:\n{s}");
     assert!(s.contains("~Shape()"), "dtor missing:\n{s}");
 }
 
 #[test]
 fn struct_fields_and_class_field_surfaced() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("int x"), "struct field x missing:\n{s}");
     assert!(s.contains("int y"), "struct field y missing:\n{s}");
     assert!(s.contains("int sides_"), "private class field missing:\n{s}");
@@ -56,6 +56,6 @@ fn struct_fields_and_class_field_surfaced() {
 
 #[test]
 fn top_level_free_function_surfaced() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("free_function"), "free function missing:\n{s}");
 }

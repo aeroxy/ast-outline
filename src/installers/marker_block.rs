@@ -87,7 +87,7 @@ pub fn has_unmanaged_brand_content(content: &str) -> bool {
         // CLI invocation: `ast-outline ` followed by a known subcommand. Keep
         // the list narrow — these are the most distinctive shape tokens.
         const SUBCOMMANDS: &[&str] = &[
-            "outline",
+            "map",
             "digest",
             "show",
             "implements",
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn has_unmanaged_brand_content_flags_cli_invocation() {
-        assert!(has_unmanaged_brand_content("Run `ast-outline outline src/`.\n"));
+        assert!(has_unmanaged_brand_content("Run `ast-outline map src/`.\n"));
         assert!(has_unmanaged_brand_content("ast-outline digest .\n"));
     }
 

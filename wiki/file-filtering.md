@@ -1,6 +1,6 @@
 # File filtering
 
-`ast-outline` skips a lot of files when walking a directory — by design. This page documents exactly what gets included, what gets skipped, and how to override it. It applies uniformly to every subcommand: `outline`, `digest`, `show`, `implements`, `surface`, `deps`, `reverse-deps`, `cycles`, `graph`, `search`, `find-related`, and `index`.
+`ast-outline` skips a lot of files when walking a directory — by design. This page documents exactly what gets included, what gets skipped, and how to override it. It applies uniformly to every subcommand: `map`, `digest`, `show`, `implements`, `surface`, `deps`, `reverse-deps`, `cycles`, `graph`, `search`, `find-related`, and `index`.
 
 ## The five layers
 
@@ -51,7 +51,7 @@ benches/data/
 *.generated.rs
 ```
 
-`tests/fixtures/large_corpus/` stays git-tracked but doesn't get walked when you outline or search the repo.
+`tests/fixtures/large_corpus/` stays git-tracked but doesn't get walked when you map or search the repo.
 
 ### 4. Extension allowlist (chunker)
 
@@ -62,7 +62,7 @@ For `search` / `find-related` / `index` only, an additional check: the file must
 
 Everything else (binaries, lockfiles, images, fonts, `.min.js`, `.txt`, etc.) is skipped before the file is opened.
 
-`outline` / `digest` / `show` / `implements` use a narrower set — only the languages with a hand-written outline adapter at [`src/adapters/`](../src/adapters/) (Rust, Python, TS family, Java, C#, C++, Go, Kotlin, Scala, PHP, Ruby, SQL, Markdown). The chunker's broader set means search supports more languages than outline does. See [architecture.md](architecture.md).
+`map` / `digest` / `show` / `implements` use a narrower set — only the languages with a hand-written adapter at [`src/adapters/`](../src/adapters/) (Rust, Python, TS family, Java, C#, C++, Go, Kotlin, Scala, PHP, Ruby, SQL, Markdown). The chunker's broader set means search supports more languages than map does. See [architecture.md](architecture.md).
 
 ### 5. File-level guards (search / index only)
 
@@ -71,7 +71,7 @@ Before chunking + embedding, search additionally skips files that:
 - exceed `--max-file-size` (default not yet wired in v1; will land in phase 8)
 - look generated/bundled by name (e.g. `*.min.js`, `*-lock.json`) — also pending wiring
 
-These don't apply to outline-family commands.
+These don't apply to map-family commands.
 
 ## Debugging "why is/isn't this file included?"
 
@@ -101,4 +101,4 @@ If `ast-outline` shows a file but you want it excluded:
 
 - **Hardcoded denylist over pure `.gitignore` reliance** — protects users with permissive `.gitignore` from accidentally indexing 1 GB of `node_modules`. Cost: a fresh repo can't index its own `node_modules` even if it wanted to (unlikely, but possible — see escape hatch below).
 - **No CLI flag to disable the denylist in v1** — keeps the surface small. If you genuinely need to walk `node_modules`, point ast-outline at it directly: `ast-outline digest node_modules/some-package` (the denylist is component-based and only triggers when `node_modules` appears as an *intermediate* component).
-- **Same filtering for outline + search** — one mental model. Adding an outline adapter for a new language and adding it to search both happen automatically once `is_indexable` claims the extension.
+- **Same filtering for map + search** — one mental model. Adding a map adapter for a new language and adding it to search both happen automatically once `is_indexable` claims the extension.

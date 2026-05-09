@@ -2,7 +2,7 @@
 
 `ast-outline` is a fast, structurally-aware code-navigation toolkit. It started as a "shape extractor" (signatures with line ranges, no method bodies) and has grown into four orthogonal subsystems sharing one binary, one filter pipeline, and one walk infrastructure:
 
-1. **`src/adapters/` + `src/core.rs`** — language adapters parse files into a shared `Declaration` IR; renderers turn that into `outline` / `digest` / `show` / `implements` output.
+1. **`src/adapters/` + `src/core.rs`** — language adapters parse files into a shared `Declaration` IR; renderers turn that into `map` / `digest` / `show` / `implements` output.
 2. **`src/surface/`** — resolves the *true public API* of a package (`pub use`, `__all__`, TypeScript barrels, Scala `export`) instead of just listing every public item per file.
 3. **`src/deps/`** — file-level dependency graph (`deps`, `reverse-deps`, `cycles`, `graph`) for nine languages, cached at `.ast-outline/deps/`. See [deps.md](deps.md).
 4. **`src/search/`** — hybrid BM25 + dense semantic search, plus `find-related`. Cached at `.ast-outline/index/`. See [search.md](search.md).
@@ -15,7 +15,7 @@ It is written natively in Rust, relying heavily on the [tree-sitter](https://tre
 2. **Parsing (`src/adapters/*`)**: The raw source string is handed to `ast-grep` which returns a tree of `ast_grep_core::Node`. A language-specific adapter (e.g. `rust.rs`, `python.rs`) performs a highly tailored AST traversal over these nodes.
 3. **IR Generation (`src/core.rs`)**: The traversal emits a canonical `Declaration` tree. This is the Intermediate Representation (IR) shared across every language. It encapsulates `kind`, `name`, `signature`, `docs`, `visibility`, etc.
 4. **Rendering (`src/core.rs`)**:
-   - `outline` iterates the declarations to print a hierarchical file breakdown.
+   - `map` iterates the declarations to print a hierarchical file breakdown.
    - `digest` squashes the tree into a concise module-level API map.
    - `show` walks the tree for a specific suffix match and extracts the raw string boundaries.
    - `implements` performs a generic Breadth-First-Search across the IR trees of the entire repository to find inheritance hierarchies.
@@ -33,7 +33,7 @@ Every operation is an explicit subcommand — there's no implicit-default form. 
 
 - **Transport**: line-delimited JSON-RPC 2.0 on stdin/stdout, fully synchronous — no tokio, no extra dependencies. The cost is ~600 KB of binary (~1%) and zero overhead on the regular CLI commands, since none of the MCP code runs unless you invoke the `mcp` subcommand.
 - **`src/mcp/protocol.rs`**: serde types for `Request`/`Response`/`RpcError` and the standard JSON-RPC error codes.
-- **`src/mcp/tools.rs`**: declares twelve tool schemas (`outline`, `digest`, `show`, `implements`, `surface`, `deps`, `reverse_deps`, `cycles`, `graph`, `search`, `find_related`, `index`) and dispatches `tools/call` into the existing `core::render_*` / `surface::*` / `deps::*` / `search::*` functions. Each tool maps 1:1 to a CLI subcommand and reuses its render logic byte-for-byte, so the JSON schemas are shared with the CLI's `--json` output.
+- **`src/mcp/tools.rs`**: declares twelve tool schemas (`map`, `digest`, `show`, `implements`, `surface`, `deps`, `reverse_deps`, `cycles`, `graph`, `search`, `find_related`, `index`) and dispatches `tools/call` into the existing `core::render_*` / `surface::*` / `deps::*` / `search::*` functions. Each tool maps 1:1 to a CLI subcommand and reuses its render logic byte-for-byte, so the JSON schemas are shared with the CLI's `--json` output.
 - **`src/mcp/mod.rs`**: read loop, method routing (`initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, `prompts/list`), and panic-safe tool dispatch (panics are surfaced as `-32603 internal error` instead of taking the server down).
 
 Tools are exposed in their text form by default — that's what the agent prompt is built around — with `json: true` available for any client that wants the structured payload.

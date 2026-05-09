@@ -111,7 +111,7 @@ fn initialize_result() -> Value {
             "name": "ast-outline",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Structural code outlines via tree-sitter. Use `outline` for one file's shape, `digest` for an unfamiliar directory, `show` to extract a single symbol's source, and `implements` to find subclasses of a type."
+        "instructions": "Structural code outlines via tree-sitter. Use `map` for one file's shape, `digest` for an unfamiliar directory, `show` to extract a single symbol's source, and `implements` to find subclasses of a type."
     })
 }
 

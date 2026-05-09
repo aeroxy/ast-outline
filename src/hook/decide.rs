@@ -27,7 +27,7 @@ pub fn decide(event: &ToolCallEvent, opts: &DecideOpts) -> Decision {
             _ => return Decision::PassThrough,
         }
     }
-    match render_outline_for(path) {
+    match render_map_for(path) {
         Some(content) => Decision::Substitute {
             content: format!(
                 "{}\n# ast-outline substituted full file. Re-read with offset/limit, or\n# `ast-outline show <file> <symbol>` for a body.\n",
@@ -87,11 +87,11 @@ fn line_count_at_least(path: &Path, threshold: usize) -> std::io::Result<bool> {
     Ok(false)
 }
 
-fn render_outline_for(path: &Path) -> Option<String> {
+fn render_map_for(path: &Path) -> Option<String> {
     let res = crate::main_helpers::parse_file_for_hook(path)?;
-    Some(crate::core::render_outline(
+    Some(crate::core::render_map(
         &res,
-        &crate::core::OutlineOptions::default(),
+        &crate::core::MapOptions::default(),
     ))
 }
 

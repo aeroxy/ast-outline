@@ -3,7 +3,7 @@ use serde::{Serialize, Serializer};
 use std::path::{Path, PathBuf};
 
 // Stable JSON schema identifiers — bump on breaking changes.
-pub const JSON_SCHEMA_OUTLINE: &str = "ast-outline.outline.v1";
+pub const JSON_SCHEMA_MAP: &str = "ast-outline.map.v1";
 pub const JSON_SCHEMA_SHOW: &str = "ast-outline.show.v1";
 pub const JSON_SCHEMA_IMPLEMENTS: &str = "ast-outline.implements.v1";
 pub const JSON_SCHEMA_SURFACE: &str = "ast-outline.surface.v1";
@@ -149,7 +149,7 @@ pub struct ParseResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct OutlineOptions {
+pub struct MapOptions {
     pub include_private: bool,
     pub include_fields: bool,
     pub include_docs: bool,
@@ -160,7 +160,7 @@ pub struct OutlineOptions {
     pub max_members: Option<usize>,
 }
 
-impl Default for OutlineOptions {
+impl Default for MapOptions {
     fn default() -> Self {
         Self {
             include_private: true,
@@ -481,7 +481,7 @@ fn _size_label(line_count: usize) -> &'static str {
 }
 
 
-pub fn render_outline(result: &ParseResult, opts: &OutlineOptions) -> String {
+pub fn render_map(result: &ParseResult, opts: &MapOptions) -> String {
     let mut lines = vec![_format_file_header(
         &format!("# {}", result.path.display()),
         result,
@@ -574,7 +574,7 @@ fn _collect_counts(decls: &[Declaration]) -> std::collections::HashMap<&'static 
     out
 }
 
-fn _render_decl(decl: &Declaration, opts: &OutlineOptions, indent: usize, out: &mut Vec<String>) {
+fn _render_decl(decl: &Declaration, opts: &MapOptions, indent: usize, out: &mut Vec<String>) {
     use DeclarationKind::*;
 
     let is_field = matches!(decl.kind, Field | Property | Event | Indexer);
@@ -1239,8 +1239,8 @@ fn _serialize_path<S: Serializer>(p: &Path, ser: S) -> Result<S::Ok, S::Error> {
 // constants; bump those on breaking changes.
 // ---------------------------------------------------------------------------
 
-/// Respect OutlineOptions when serialising the declaration tree.
-fn _filter_decls(decls: &[Declaration], opts: &OutlineOptions) -> Vec<Declaration> {
+/// Respect MapOptions when serialising the declaration tree.
+fn _filter_decls(decls: &[Declaration], opts: &MapOptions) -> Vec<Declaration> {
     use DeclarationKind::*;
     if decls.is_empty() {
         return Vec::new();
@@ -1270,7 +1270,7 @@ fn _filter_decls(decls: &[Declaration], opts: &OutlineOptions) -> Vec<Declaratio
 }
 
 #[derive(Serialize)]
-struct JsonOutlineDoc<'a> {
+struct JsonMapDoc<'a> {
     schema: &'static str,
     files: Vec<JsonFile<'a>>,
 }
@@ -1302,8 +1302,8 @@ struct JsonImplementsDoc<'a> {
     matches: &'a [ImplMatch],
 }
 
-/// Render `outline` (or `outline --json`) — one entry per file.
-pub fn render_json_outline(results: &[ParseResult], opts: &OutlineOptions, pretty: bool) -> String {
+/// Render `map` (or `map --json`) — one entry per file.
+pub fn render_json_map(results: &[ParseResult], opts: &MapOptions, pretty: bool) -> String {
     let mut paths: Vec<String> = results
         .iter()
         .map(|r| r.path.to_string_lossy().into_owned())
@@ -1326,8 +1326,8 @@ pub fn render_json_outline(results: &[ParseResult], opts: &OutlineOptions, prett
         })
         .collect();
 
-    let doc = JsonOutlineDoc {
-        schema: JSON_SCHEMA_OUTLINE,
+    let doc = JsonMapDoc {
+        schema: JSON_SCHEMA_MAP,
         files,
     };
     _to_json(&doc, pretty)

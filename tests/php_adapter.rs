@@ -29,7 +29,7 @@ fn run(args: &[&str]) -> String {
 
 #[test]
 fn namespace_interface_class_render() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(s.contains("namespace App\\Billing"), "namespace missing:\n{s}");
     assert!(s.contains("interface Payable"), "interface missing:\n{s}");
     assert!(s.contains("class Account"), "class missing:\n{s}");
@@ -37,7 +37,7 @@ fn namespace_interface_class_render() {
 
 #[test]
 fn property_visibility_and_modifiers_render() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     // Properties keep their `$` prefix from tree-sitter-php.
     assert!(s.contains("public $email"), "public property missing:\n{s}");
     assert!(
@@ -48,7 +48,7 @@ fn property_visibility_and_modifiers_render() {
 
 #[test]
 fn method_visibility_and_modifiers_render() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     // Default visibility is "public" on `__construct`.
     assert!(
         s.contains("public function __construct"),
@@ -66,7 +66,7 @@ fn method_visibility_and_modifiers_render() {
 
 #[test]
 fn top_level_function_surfaced() {
-    let s = run(&["outline", FIXTURE]);
+    let s = run(&["map", FIXTURE]);
     assert!(
         s.contains("function format_amount"),
         "top-level function missing:\n{s}"
