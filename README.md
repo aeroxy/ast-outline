@@ -1,8 +1,8 @@
 # ast-outline
 
-Fast, AST-based **code-navigation toolkit** for source files — read the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, and search the repo by *symbol or behaviour*. Fourteen subcommands, one binary, built for LLM coding agents and humans who'd rather not waste tokens reading every file just to understand a codebase.
+Fast, AST-based **code-navigation toolkit** for source files — surface the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, and search the repo by *symbol* or *behaviour*. Fourteen subcommands, one binary, built for LLM coding agents and humans who’d rather not waste tokens reading every file just to understand a codebase.
 
-`ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and uses [rayon](https://github.com/rayon-rs/rayon) to parse your entire workspace concurrently in milliseconds. The `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline). The Rust code itself originated from a larger code-agent project and is not a direct port.
+[ast-outline](https://github.com/aeroxy/ast-outline) is written in Rust and uses [ast-grep](https://github.com/ast-grep/ast-grep)’s incredibly fast [tree-sitter](https://github.com/tree-sitter/tree-sitter) bindings. Thanks to [rayon](https://github.com/rayon-rs/rayon), it parses your entire workspace concurrently—often in milliseconds. For Google- or ByteDance-scale monorepos, [ast-outline](https://github.com/aeroxy/ast-outline) benefits from the additional abstraction layer provided by [repolayer](https://github.com/zhousiyao03-cyber/repolayer).
 
 [![crates.io](https://img.shields.io/crates/v/ast-outline.svg)](https://crates.io/crates/ast-outline)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -12,12 +12,12 @@ Fast, AST-based **code-navigation toolkit** for source files — read the *shape
 
 ## Purpose
 
-**`ast-outline` exists to make LLM coding agents faster, cheaper, and smarter
+**[ast-outline](https://github.com/aeroxy/ast-outline) exists to make LLM coding agents faster, cheaper, and smarter
 when navigating unfamiliar code.**
 
 Modern agentic coding tools explore codebases by reading files directly. That's reliable but has a massive cost: on a 1000-line file, the agent pays for 1000 lines of tokens just to answer *"what methods exist here?"* — and reading is only one of several questions an agent has. *"Who imports this?"* *"What's the public API?"* *"Are there cycles?"* *"Where in the repo is the login flow?"* — each one historically required dozens of file reads or noisy `grep`s.
 
-`ast-outline` collapses each of those questions into a single command:
+[ast-outline](https://github.com/aeroxy/ast-outline) collapses each of those questions into a single command:
 
 1. **Shape over bytes.** `map` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
@@ -28,7 +28,7 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 
 ### The workflow
 
-**Before `ast-outline`:**
+**Before [ast-outline](https://github.com/aeroxy/ast-outline):**
 
 ```
 Agent: Read Player.cs            # 1200 lines of tokens
@@ -38,7 +38,7 @@ Agent: grep "IDamageable" src/   # noisy, lots of false matches
 ...
 ```
 
-**With `ast-outline`:**
+**With [ast-outline](https://github.com/aeroxy/ast-outline):**
 
 ```
 Agent: ast-outline surface .                  # one-page true public API of the crate/package
@@ -82,11 +82,11 @@ For "what does this package actually expose?" — historically the most expensiv
 
 ## What gets walked
 
-`ast-outline` skips a lot of files when walking a directory — by design. Filters apply uniformly across every subcommand.
+[ast-outline](https://github.com/aeroxy/ast-outline) skips a lot of files when walking a directory — by design. Filters apply uniformly across every subcommand.
 
 1. **`.gitignore` and friends** — every level's `.gitignore`, your global gitignore, `.git/info/exclude`, and `.ignore` files (the [`ignore`](https://crates.io/crates/ignore) crate's convention used by `ripgrep`/`fd`).
 2. **Hardcoded denylist** — directories almost no one wants walked, even if `.gitignore` doesn't list them: `.git`, `node_modules`, `target`, `dist`, `build`, `__pycache__`, `.venv`, `venv`, `.cache`, `.idea`, `.vscode`, `.next`, `.nuxt`, `.turbo`, `.parcel-cache`, `.gradle`, `.tox`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `.eggs`, `.ast-outline`, and a few others.
-3. **`.ast-outline-ignore`** — per-repo escape hatch. Same syntax as `.gitignore`. Useful for excluding paths from `ast-outline` that you *don't* want excluded from git itself, e.g. test fixtures or vendored corpora:
+3. **`.ast-outline-ignore`** — per-repo escape hatch. Same syntax as `.gitignore`. Useful for excluding paths from [ast-outline](https://github.com/aeroxy/ast-outline) that you *don't* want excluded from git itself, e.g. test fixtures or vendored corpora:
 
    ```gitignore
    # .ast-outline-ignore
@@ -114,11 +114,11 @@ brew install aeroxy/tap/ast-outline
 cargo install ast-outline
 ```
 
-This installs the `ast-outline` CLI globally into `~/.cargo/bin` — make sure that's on your `PATH`.
+This installs the [ast-outline](https://github.com/aeroxy/ast-outline) CLI globally into `~/.cargo/bin` — make sure that's on your `PATH`.
 
 ### Nix
 
-You can run `ast-outline` directly with Nix without installing:
+You can run [ast-outline](https://github.com/aeroxy/ast-outline) directly with Nix without installing:
 
 ```bash
 nix run github:aeroxy/ast-outline
@@ -275,7 +275,7 @@ cp -r skills/ast-outline ~/.claude/skills/ast-outline
 ```
 
 This works alongside `ast-outline install` — the skill definition tells Claude Code
-how to invoke the `ast-outline` CLI with proper tool schemas and documentation.
+how to invoke the [ast-outline](https://github.com/aeroxy/ast-outline) CLI with proper tool schemas and documentation.
 
 Manual install via `ast-outline prompt` (e.g. project-level):
 
@@ -391,7 +391,7 @@ changes, so downstream tooling can guard on it:
 
 ## MCP server
 
-Run `ast-outline` as a [Model Context Protocol](https://modelcontextprotocol.io)
+Run [ast-outline](https://github.com/aeroxy/ast-outline) as a [Model Context Protocol](https://modelcontextprotocol.io)
 server over stdio so any MCP-aware coding agent can call the same operations
 as native tools — no shell parsing required:
 
@@ -541,7 +541,7 @@ For internals (per-language node-kind tables, the call-shape pitfalls each adapt
 
 ## Architecture & Development
 
-See the [wiki](https://github.com/aeroxy/ast-outline/blob/main/wiki/architecture.md) on GitHub for details on how `ast-outline` leverages `ast-grep` internally and how you can add new language adapters.
+See the [wiki](https://github.com/aeroxy/ast-outline/blob/main/wiki/architecture.md) on GitHub for details on how [ast-outline](https://github.com/aeroxy/ast-outline) leverages `ast-grep` internally and how you can add new language adapters.
 
 ### Getting started
 
