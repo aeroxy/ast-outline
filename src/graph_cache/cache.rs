@@ -177,6 +177,77 @@ pub fn save(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph_cache::shared;
+
+    fn write(p: &Path, body: &str) {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(p, body).unwrap();
+    }
+
+    /// Cold build → on-disk cache has `calls: None`. After `promote_calls`,
+    /// re-reading and decoding the file directly (NOT via the in-memory
+    /// registry) must show `calls: Some(...)`. Then `forget` + `get_or_init`
+    /// must return an Arc whose calls half is still present, proving the
+    /// load path round-trips the option correctly.
+    #[test]
+    fn promote_calls_persists_calls_half_to_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        write(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"persist_smoke\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            &root.join("src/lib.rs"),
+            "pub fn callee() {}\npub fn caller() { callee(); }\n",
+        );
+
+        // 1. Cold build via the production path. Ensures the in-memory
+        //    registry slot exists for the later promote_calls call.
+        shared::forget(root);
+        let cold = shared::get_or_init(root).expect("cold get_or_init");
+        assert!(cold.calls.is_none(), "fresh build should not promote");
+
+        let bytes = fs::read(cache_path(root)).expect("read cold cache");
+        let (cf, _): (CacheFile, _) =
+            decode_from_slice(&bytes, bincode::config::standard()).expect("decode cold");
+        assert!(cf.graph.calls.is_none(), "on-disk cold cache should be calls: None");
+
+        // 2. Promote and re-read the bytes from disk.
+        shared::promote_calls(root, |g| {
+            crate::calls::build::build_call_graph(root, &g.deps)
+        })
+        .expect("promote_calls");
+
+        let bytes = fs::read(cache_path(root)).expect("read promoted cache");
+        let (cf, _): (CacheFile, _) =
+            decode_from_slice(&bytes, bincode::config::standard()).expect("decode promoted");
+        let calls = cf
+            .graph
+            .calls
+            .expect("promoted cache must persist calls: Some");
+        assert!(
+            calls.forward.values().any(|edges| !edges.is_empty()),
+            "persisted call graph should carry edges"
+        );
+
+        // 3. Drop the in-memory entry and reload — the production load
+        //    path must surface calls: Some after rehydration.
+        shared::forget(root);
+        let reloaded = shared::get_or_init(root).expect("reload after forget");
+        assert!(
+            reloaded.calls.is_some(),
+            "reload from disk must see promoted calls"
+        );
+    }
+}
+
 fn write_gitignore(dir: &Path) -> std::io::Result<()> {
     let p = dir.parent().map(|d| d.join(".gitignore"));
     if let Some(p) = p {
