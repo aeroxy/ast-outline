@@ -10,46 +10,16 @@
 //! `rayon::par_iter` is fast (the parse-for-hook path is what `map`/`show`
 //! already use, and is sub-millisecond per file).
 
-use crate::calls::graph::{CallEdge, CallGraph, CallKindCompat, CallTarget, CallableMeta, Qn, TypeMeta};
+use crate::calls::graph::{CallGraph, CallKindCompat, CallTarget, CallableMeta, Qn, TypeMeta};
+use crate::calls::pass::{file_rel, qn_from, FilePass, RawEdge};
 use crate::calls::resolve;
-use crate::core::{CallSite, Declaration, DeclarationKind, ImportBinding};
+use crate::core::{CallSite, Declaration, DeclarationKind};
 use crate::deps::DepGraph;
 use crate::main_helpers::parse_file_for_hook;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-
-/// Per-file output of phase 1: the file's qns, its imports, and its raw
-/// (unresolved) call-edges. Phase 2 in `resolve.rs` joins these globally.
-pub struct FilePass {
-    pub file: PathBuf,
-    pub language: &'static str,
-    /// All qns this file defines — top-level + nested. Order matters only
-    /// for stable output; pass A consumes as a set.
-    pub defined: Vec<Qn>,
-    /// Per-callable file/line metadata for the qns in `defined`. Same
-    /// length and order. Aggregated into `CallGraph::callable_meta`.
-    pub callable_locations: Vec<CallableMeta>,
-    /// `local_name → module spec` from `use`/`import`/`using` statements.
-    pub imports: Vec<ImportBinding>,
-    /// One entry per call site in the file. `target` is `Bare` here; the
-    /// resolver promotes it.
-    pub raw_edges: Vec<RawEdge>,
-    /// Type declarations — class/struct/interface/trait/enum/record. Carries
-    /// `bases` so the implementors-reverse index can be built without a
-    /// second walk. Independent of the call-edge pipeline.
-    pub types: Vec<(Qn, TypeMeta)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct RawEdge {
-    pub source: Qn,
-    pub bare_name: String,
-    pub receiver: Option<String>,
-    pub kind: CallKindCompat,
-    pub line: u32,
-}
 
 pub fn build_call_graph(root: &Path, deps: &DepGraph) -> CallGraph {
     let start = Instant::now();
@@ -141,15 +111,10 @@ fn normalise_type_name(name: &str) -> String {
     name.to_string()
 }
 
-/// Public re-export of `extract_file` for the incremental updater in
-/// `crate::graph_cache::delta`. Internal callers use the private name to
-/// keep the build pipeline's surface narrow.
-pub fn extract_file_pub(root: &Path, file: &Path) -> Option<FilePass> {
-    extract_file(root, file)
-}
-
 /// Phase 1 per-file: parse, walk Declarations, emit qns + raw edges + types.
-fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
+/// Public so the incremental updater in `crate::graph_cache::delta` can
+/// re-extract individual files without re-walking the project.
+pub fn extract_file(root: &Path, file: &Path) -> Option<FilePass> {
     let parse = parse_file_for_hook(file)?;
     let language = parse.language;
     let rel = file_rel(root, file);
@@ -260,37 +225,5 @@ fn call_to_raw(source: Qn, cs: &CallSite) -> RawEdge {
         receiver: cs.receiver.clone(),
         kind: CallKindCompat::from(cs.kind),
         line: cs.line,
-    }
-}
-
-pub fn qn_from(rel_file: &str, parents: &[String]) -> Qn {
-    let scope = parents.join("::");
-    if scope.is_empty() {
-        Qn::new(rel_file.to_string())
-    } else {
-        Qn::new(format!("{}::{}", rel_file, scope))
-    }
-}
-
-pub fn file_rel(root: &Path, file: &Path) -> String {
-    file.strip_prefix(root)
-        .unwrap_or(file)
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-#[allow(dead_code)]
-pub(crate) fn raw_to_edge(raw: RawEdge, target: CallTarget, confidence: crate::calls::graph::Confidence, file: PathBuf, candidates: Vec<Qn>) -> CallEdge {
-    CallEdge {
-        source: raw.source,
-        target,
-        kind: raw.kind,
-        line: raw.line,
-        file,
-        confidence,
-        receiver: raw.receiver,
-        candidates,
     }
 }

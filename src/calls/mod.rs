@@ -26,6 +26,7 @@ pub mod cli;
 pub mod cli_helpers;
 pub mod graph;
 pub mod mcp;
+pub mod pass;
 pub mod render;
 pub mod resolve;
 pub mod traverse;

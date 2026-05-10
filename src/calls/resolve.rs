@@ -13,8 +13,8 @@
 //! Single survivor → `Inferred`; otherwise → `Ambiguous` with all
 //! candidates kept under `CallEdge::candidates`.
 
-use crate::calls::build::{file_rel, raw_to_edge, FilePass};
 use crate::calls::graph::{CallEdge, CallTarget, Confidence, Qn};
+use crate::calls::pass::{file_rel, raw_to_edge, FilePass, RawEdge};
 use crate::deps::manifest::detect_aliases;
 use crate::deps::resolver::{build_suffix_index, resolve as resolve_spec, Lang, ResolveCtx};
 use crate::deps::traverse;
@@ -69,7 +69,7 @@ pub fn run_with_table(
 
     // ---------- Pass A + B per-file, then pass C with the dep graph. ----------
     let mut forward: HashMap<Qn, Vec<CallEdge>> = HashMap::new();
-    let mut ambiguous_buffer: Vec<(crate::calls::build::RawEdge, PathBuf, Vec<Qn>)> = Vec::new();
+    let mut ambiguous_buffer: Vec<(RawEdge, PathBuf, Vec<Qn>)> = Vec::new();
 
     for fp in passes {
         let file_qns: HashSet<String> = fp.defined.iter().map(|q| q.name().to_string()).collect();

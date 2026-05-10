@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use crate::calls::build::{extract_file_pub, file_rel};
+use crate::calls::build::extract_file;
 use crate::calls::graph::{CallGraph, CallTarget};
+use crate::calls::pass::{file_rel, FilePass};
 use crate::calls::resolve;
 use crate::deps::extract::extract;
 use crate::deps::graph::{self as dep_graph, DepEdge};
@@ -178,9 +179,9 @@ pub fn apply_delta_to_calls(
     // 5. Re-extract added + modified files. We only re-parse the changed
     //    set (not the unchanged ones) — that's the whole point.
     let to_process = changed_abs_paths(root, delta);
-    let new_passes: Vec<crate::calls::build::FilePass> = to_process
+    let new_passes: Vec<FilePass> = to_process
         .par_iter()
-        .filter_map(|file| extract_file_pub(root, file))
+        .filter_map(|file| extract_file(root, file))
         .collect();
 
     // 6. Splice new qns into the live indices before resolving — so when
