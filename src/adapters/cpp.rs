@@ -311,6 +311,11 @@ fn _function_to_decl<'a, D: Doc>(
         .or_else(|| field_text(node, "name"))
         .unwrap_or_else(|| "?".to_string());
 
+    // Bare `name` is used for symbol lookup (callers/callees suffix matching),
+    // so for `void Greeter::greet()` it's just `greet`. The signature wants
+    // the full `Greeter::greet` so the rendered output preserves scope.
+    let sig_name = _function_definition_qualified_name(node).unwrap_or_else(|| name.clone());
+
     let return_type = node
         .field("type")
         .map(|t| collapse_ws(&t.text()).trim().to_string());
@@ -321,7 +326,7 @@ fn _function_to_decl<'a, D: Doc>(
         if name.contains("operator") {
             DeclarationKind::Operator
         } else if name.starts_with('~') {
-            DeclarationKind::Constructor
+            DeclarationKind::Destructor
         } else {
             DeclarationKind::Method
         }
@@ -334,7 +339,7 @@ fn _function_to_decl<'a, D: Doc>(
         sig.push_str(&rt);
         sig.push(' ');
     }
-    sig.push_str(&name);
+    sig.push_str(&sig_name);
     sig.push('(');
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -508,6 +513,43 @@ fn _drill_function_declarator_name<'a, D: Doc>(node: &Node<'a, D>) -> Option<Str
             let text = collapse_ws(&node.text());
             Some(text.rsplit("::").next().unwrap_or(&text).trim().to_string())
         }
+        _ => Some(collapse_ws(&node.text()).trim().to_string()),
+    }
+}
+
+/// Sibling of `_function_definition_name` that preserves scope qualifiers
+/// for the rendered signature. `void Greeter::greet()` → `Greeter::greet`,
+/// keeping the `Foo::` that the bare-name extractor strips for lookup.
+fn _function_definition_qualified_name<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
+    let declarator = node.field("declarator")?;
+    _drill_function_declarator_qname(&declarator)
+}
+
+fn _drill_function_declarator_qname<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "function_declarator" => {
+            let inner = node.field("declarator")?;
+            _drill_function_declarator_qname(&inner)
+        }
+        "pointer_declarator" | "reference_declarator" | "parenthesized_declarator" => {
+            let inner = node.field("declarator").or_else(|| {
+                node.children().find(|c| c.is_named())
+            })?;
+            _drill_function_declarator_qname(&inner)
+        }
+        // Explicit terminals — preserve the full scope (`Foo::bar`) for
+        // signature rendering. The catch-all below would also return the
+        // full text today, but pinning these makes the intent explicit and
+        // protects against tree-sitter-cpp grammar drift introducing a new
+        // wrapper node that the catch-all would silently truncate.
+        "qualified_identifier"
+        | "scoped_identifier"
+        | "identifier"
+        | "field_identifier"
+        | "operator_name"
+        | "destructor_name" => Some(collapse_ws(&node.text()).trim().to_string()),
         _ => Some(collapse_ws(&node.text()).trim().to_string()),
     }
 }

@@ -630,6 +630,11 @@ int run() {
         .unwrap_or_else(|e| panic!("invalid JSON ({}):\n{}", e, out));
     let matches = v["matches"].as_array().expect("matches array");
 
+    // The `[unresolved] Greeter` target asserts current resolver behaviour:
+    // pass A/B/C match against callable declarations only, so a Construct
+    // whose name is a *type* never gets resolved to that type's constructors.
+    // If the resolver is later taught to map type names → constructors, this
+    // assertion will need to switch to the resolved qn.
     let has_construct = matches.iter().any(|m| {
         m["kind"] == "construct" && m["target"].as_str() == Some("[unresolved] Greeter")
     });
@@ -704,6 +709,616 @@ func pingTwice() {
         out.contains("pingTwice"),
         "expected `pingTwice` in callers, got:\n{}",
         out
+    );
+}
+
+#[test]
+fn php_callers_finds_intra_file_caller() {
+    // Single-file PHP: pingTwice() invokes helper() and $g->greet().
+    // Pass A promotes both bare names to same-file qns.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // composer.json marks the dir as a PHP project root (mirrors the C++/Go
+    // marker convention used elsewhere in this file).
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Greeter.php"),
+        r#"<?php
+class Greeter {
+    public function greet(): int { return 42; }
+}
+function helper(): void {}
+function pingTwice(): void {
+    $g = new Greeter();
+    $g->greet();
+    helper();
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "helper", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_callees_lists_construct_member_and_scoped() {
+    // `run()` exercises three PHP call shapes:
+    //   `new Greeter()` → CallKind::Construct, name="Greeter"
+    //   `$g->greet()`   → CallKind::Call,      name="greet" (member_call_expression)
+    //   `Greeter::greet()` → CallKind::Call,   name="greet" (scoped_call_expression)
+    // JSON output is asserted so substring overlap between target qns can't
+    // mask a missing edge (see cpp_callees_lists_construct_and_invocation).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Demo.php"),
+        r#"<?php
+class Greeter {
+    public function greet(): int { return 42; }
+    public static function greetStatic(): int { return 7; }
+}
+function run(): int {
+    $g = new Greeter();
+    $a = $g->greet();
+    $b = Greeter::greetStatic();
+    return $a + $b;
+}
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "run", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("invalid JSON ({}):\n{}", e, out));
+    let matches = v["matches"].as_array().expect("matches array");
+
+    let has_construct = matches.iter().any(|m| {
+        m["kind"] == "construct" && m["target"].as_str() == Some("[unresolved] Greeter")
+    });
+    assert!(
+        has_construct,
+        "expected a construct edge targeting `Greeter`, got:\n{}",
+        out
+    );
+
+    let has_member_call = matches.iter().any(|m| {
+        m["kind"] == "call"
+            && m["target"].as_str() == Some("src/Demo.php::Greeter::greet")
+    });
+    assert!(
+        has_member_call,
+        "expected a member call edge resolved to `Greeter::greet`, got:\n{}",
+        out
+    );
+
+    let has_scoped_call = matches.iter().any(|m| {
+        m["kind"] == "call"
+            && m["target"].as_str() == Some("src/Demo.php::Greeter::greetStatic")
+    });
+    assert!(
+        has_scoped_call,
+        "expected a scoped call edge resolved to `Greeter::greetStatic`, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn ruby_callers_finds_intra_file_caller() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/greeter.rb"),
+        r#"
+class Greeter
+  def greet
+    42
+  end
+  def ping_twice
+    g = Greeter.new
+    g.greet
+    g.greet()
+  end
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("ping_twice"),
+        "expected `ping_twice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn ruby_callees_lists_construct_and_method_call() {
+    // `run` exercises both Ruby call kinds the adapter classifies:
+    //   `Greeter.new` → CallKind::Construct, name="Greeter" (constant receiver
+    //                    triggers Construct classification, mirroring `new T()`
+    //                    in C++/C#/TS — Ruby has no separate `new` expression)
+    //   `g.greet`     → CallKind::Call,      name="greet"
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/demo.rb"),
+        r#"
+class Greeter
+  def greet
+    42
+  end
+end
+def run
+  g = Greeter.new
+  g.greet
+end
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "run", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("invalid JSON ({}):\n{}", e, out));
+    let matches = v["matches"].as_array().expect("matches array");
+
+    let has_construct = matches.iter().any(|m| {
+        m["kind"] == "construct" && m["target"].as_str() == Some("[unresolved] Greeter")
+    });
+    assert!(
+        has_construct,
+        "expected a construct edge targeting `Greeter`, got:\n{}",
+        out
+    );
+
+    let has_call = matches.iter().any(|m| {
+        m["kind"] == "call" && m["target"].as_str() == Some("lib/demo.rb::Greeter::greet")
+    });
+    assert!(
+        has_call,
+        "expected a call edge resolved to `Greeter::greet`, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_namespaced_call_resolves_as_free_function() {
+    // `\App\bar()` and `bar()` are both free-function calls — the namespace
+    // prefix is a *qualifier*, not a method receiver. The adapter must drop
+    // the namespace so pass B in resolve.rs (which gates single-match
+    // promotion on `!has_receiver`) can resolve the bare name.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/App.php"),
+        r#"<?php
+namespace App;
+function bar(): int { return 1; }
+function caller(): int {
+    return \App\bar() + bar();
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "bar", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("caller"),
+        "expected `caller` in callers (qualified+bare both resolve), got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_dynamic_new_is_skipped() {
+    // `new $cls()` names a runtime value, not a callable — emitting a `$cls`
+    // Construct edge would create perpetually-unresolved noise. The adapter
+    // returns None for variable_name class refs, so only the static
+    // `new Greeter()` shows up.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Demo.php"),
+        r#"<?php
+class Greeter {}
+function run(): void {
+    $cls = "Greeter";
+    $a = new $cls();
+    $b = new Greeter();
+}
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "run", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("invalid JSON ({}):\n{}", e, out));
+    let matches = v["matches"].as_array().expect("matches array");
+
+    let constructs: Vec<&serde_json::Value> = matches
+        .iter()
+        .filter(|m| m["kind"] == "construct")
+        .collect();
+    assert_eq!(
+        constructs.len(),
+        1,
+        "expected exactly one Construct edge (static `new Greeter()`), got {}:\n{}",
+        constructs.len(),
+        out
+    );
+    assert_eq!(
+        constructs[0]["target"].as_str(),
+        Some("[unresolved] Greeter"),
+        "expected Construct target=Greeter, got:\n{}",
+        out
+    );
+
+    let dollar_targets = matches
+        .iter()
+        .any(|m| m["target"].as_str().is_some_and(|s| s.contains('$')));
+    assert!(
+        !dollar_targets,
+        "no edge should reference a `$variable` class name, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn ruby_class_method_call_resolves() {
+    // `Greeter.shout` — class-method invocation via dot syntax. The receiver
+    // is the class constant `Greeter`, not an instance. Pass A should still
+    // promote `shout` to the same-file qn since the class defines it.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/demo.rb"),
+        r#"
+class Greeter
+  def self.shout
+    "HEY"
+  end
+end
+def run
+  Greeter.shout
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "shout", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("run"),
+        "expected `run` to be a caller of `shout`, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_dynamic_function_call_is_skipped() {
+    // `$func()` calls a runtime value — no static target exists. The adapter
+    // should drop the edge entirely rather than emit a `$func` name that
+    // can't match any declaration.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Demo.php"),
+        r#"<?php
+function helper(): int { return 1; }
+function run(): int {
+    $func = "helper";
+    return $func() + helper();
+}
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "run", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("invalid JSON ({}):\n{}", e, out));
+    let matches = v["matches"].as_array().expect("matches array");
+
+    // Only the static `helper()` call should appear; `$func()` must not.
+    let has_helper = matches
+        .iter()
+        .any(|m| m["target"].as_str() == Some("src/Demo.php::helper"));
+    assert!(has_helper, "expected `helper` callee, got:\n{}", out);
+
+    let has_dollar_target = matches
+        .iter()
+        .any(|m| m["name"].as_str().is_some_and(|s| s.contains('$'))
+            || m["target"].as_str().is_some_and(|s| s.contains('$')));
+    assert!(
+        !has_dollar_target,
+        "no edge should reference a `$variable` callable, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_self_static_parent_keywords_drop_receiver() {
+    // `self::method()`, `static::method()`, and `parent::method()` use
+    // late-binding keywords as the scope. They aren't class names, so the
+    // adapter drops them — pass B in resolve.rs then promotes the bare
+    // method name against the global symbol table (gated on `!has_receiver`).
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Demo.php"),
+        r#"<?php
+class Base {
+    public static function shared(): int { return 1; }
+}
+class Greeter extends Base {
+    public static function inner(): int { return 2; }
+    public static function caller(): int {
+        return self::inner() + static::inner() + parent::shared();
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "shared", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("caller"),
+        "expected `parent::shared()` to find caller via dropped receiver, got:\n{}",
+        out
+    );
+
+    // `self::inner()` and `static::inner()` should both resolve to inner —
+    // verify by counting the callees of `caller`.
+    let (out, code) = run_in(
+        root,
+        &["callees", "caller", ".", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+    let matches = v["matches"].as_array().unwrap();
+    let inner_calls = matches
+        .iter()
+        .filter(|m| m["target"].as_str() == Some("src/Demo.php::Greeter::inner"))
+        .count();
+    assert_eq!(
+        inner_calls, 2,
+        "expected both `self::inner()` and `static::inner()` to resolve, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_anonymous_class_emits_no_construct_edge() {
+    // `new class { ... }` has no name — there's nothing to record as a target.
+    // The adapter filters `anonymous_class` from the children search, so
+    // such expressions emit no Construct edge.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Demo.php"),
+        r#"<?php
+function run(): object {
+    return new class {
+        public function ping(): int { return 1; }
+    };
+}
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "run", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+    let matches = v["matches"].as_array().unwrap();
+    let has_construct = matches.iter().any(|m| m["kind"] == "construct");
+    assert!(
+        !has_construct,
+        "anonymous class should not emit a Construct edge, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn ruby_self_receiver_resolves_via_pass_b() {
+    // `self.greet` uses the `self` keyword as receiver. The resolver in
+    // resolve.rs:142 explicitly treats `self` as a non-receiver, letting
+    // pass B promote the bare name against the global symbol table.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/demo.rb"),
+        r#"
+class Greeter
+  def greet
+    42
+  end
+  def via_self
+    self.greet
+  end
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("via_self"),
+        "expected `via_self` (uses self.greet) in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn ruby_block_calls_attributed_to_enclosing_method() {
+    // Ruby blocks (`do ... end`, `{ ... }`) are closures, not separate
+    // methods — calls inside them belong to the enclosing method, not to
+    // some anonymous block scope. The adapter walker deliberately does NOT
+    // bail on `block`/`do_block`, so `each` and `inner` here are both
+    // attributed to `outer`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/demo.rb"),
+        r#"
+class Greeter
+  def inner
+    42
+  end
+  def outer
+    [1, 2, 3].each do |_x|
+      inner()
+    end
+  end
+end
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "inner", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("outer"),
+        "expected `outer` (calls `inner()` inside a do_block) to be a caller, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn php_uppercase_self_normalizes_to_lowercase_keyword() {
+    // tree-sitter-php's `keyword()` helper aliases case-insensitive matches
+    // to the lowercase canonical form, so `SELF::method` parses with the
+    // scope text already normalized to `self`. Our adapter relies on that:
+    // the late-binding check matches lowercase only. Pin this assumption
+    // with three `shared` candidates so the test fails loudly if a future
+    // grammar version stops normalizing — the case-mismatched receiver
+    // would then escape pass A/B and force `Ambiguous`/`Inferred` instead
+    // of `Exact`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("composer.json"), "{}\n");
+    write(
+        &root.join("src/Demo.php"),
+        r#"<?php
+class A { public static function shared(): int { return 1; } }
+class B { public static function shared(): int { return 2; } }
+class Greeter {
+    public static function shared(): int { return 0; }
+    public static function caller(): int {
+        return SELF::shared() + Self::shared() + STATIC::shared();
+    }
+}
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "caller", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+    let matches = v["matches"].as_array().unwrap();
+    let exact_self_resolutions = matches
+        .iter()
+        .filter(|m| {
+            m["target"].as_str() == Some("src/Demo.php::Greeter::shared")
+                && m["confidence"].as_str() == Some("Exact")
+        })
+        .count();
+    assert_eq!(
+        exact_self_resolutions, 3,
+        "all three case variants should resolve Exact to `Greeter::shared`, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn ruby_paren_less_calls_with_args_are_captured() {
+    // tree-sitter-ruby 0.23.1 unifies `puts "x"`, `require "y"`, and
+    // `log_event :z` into the `call` node kind (no separate `command`
+    // grammar). Lock this in: if a future grammar split them out, the
+    // adapter would silently drop these and this test fails.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("Gemfile"), "source 'https://rubygems.org'\n");
+    write(
+        &root.join("lib/demo.rb"),
+        r#"
+def caller_method
+  puts "literal arg"
+  require "some_lib"
+  log_event :start
+end
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "caller_method", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("json");
+    let matches = v["matches"].as_array().unwrap();
+    let names: Vec<&str> = matches
+        .iter()
+        .filter_map(|m| m["target"].as_str())
+        .collect();
+    for needle in ["puts", "require", "log_event"] {
+        assert!(
+            names.iter().any(|t| t.contains(needle)),
+            "expected paren-less `{}` to be captured as a callee, got:\n{}",
+            needle,
+            out
+        );
+    }
+}
+
+#[test]
+fn cpp_out_of_line_method_signature_keeps_scope() {
+    // `int Greeter::greet()` defined out-of-line. The adapter splits the
+    // bare name (`greet`, used for symbol lookup) from the qualified name
+    // (`Greeter::greet`, used for the rendered signature). The map output
+    // must show the scope-qualified form — losing it produced the misleading
+    // `int greet()` signature for years before the qname helper landed.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.10)\nproject(smoke)\n",
+    );
+    write(
+        &root.join("src/demo.cpp"),
+        r#"
+class Greeter {
+public:
+    int greet();
+};
+int Greeter::greet() { return 42; }
+"#,
+    );
+    let out = Command::new(bin())
+        .args(["map", "src/demo.cpp"])
+        .current_dir(root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Greeter::greet"),
+        "expected scope-qualified `Greeter::greet` in signature, got:\n{}",
+        stdout
     );
 }
 

@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -187,6 +187,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
     let params = _method_params(node, src);
 
     let sig = format!("def {}({})", name, params.join(", "));
+    let calls = _extract_calls(node, src);
     let range = node.range();
     Some(Declaration {
         kind: DeclarationKind::Method,
@@ -206,7 +207,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     })
 }
 
@@ -222,6 +223,7 @@ fn _singleton_method_to_decl<'a, D: Doc>(
     let params = _method_params(node, src);
 
     let sig = format!("def {}.{}({})", object, name, params.join(", "));
+    let calls = _extract_calls(node, src);
     let range = node.range();
     Some(Declaration {
         kind: DeclarationKind::Method,
@@ -241,7 +243,7 @@ fn _singleton_method_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     })
 }
 
@@ -402,4 +404,104 @@ fn _method_params<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Vec<String> {
         }
     }
     params
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
+    let mut out = Vec::new();
+    let body = node.field("body").unwrap_or_else(|| node.clone());
+    _walk_calls_in_body(&body, src, &mut out);
+    out
+}
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "method" | "singleton_method" | "class" | "module" | "lambda"
+    ) {
+        return;
+    }
+
+    if kind == "call" {
+        if let Some(cs) = _call_site_from_call_ruby(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call_ruby<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let method_node = node.field("method")?;
+    let receiver_node = node.field("receiver");
+    let name_raw = String::from_utf8_lossy(&src[method_node.range()]).to_string();
+    let name = collapse_ws(&name_raw).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    let receiver_text = receiver_node
+        .as_ref()
+        .map(|r| collapse_ws(&String::from_utf8_lossy(&src[r.range()])));
+
+    // Ruby idiom: `Foo.new(...)` is a constructor call. Classify as Construct
+    // so callers/callees renderers can distinguish it from regular invocations
+    // (mirrors the Construct edges produced by C++/C#/TS `new` expressions).
+    let kind = if name == "new" {
+        if let Some(rcv) = &receiver_text {
+            if !rcv.is_empty() && _looks_like_constant_ruby(rcv) {
+                CallKind::Construct
+            } else {
+                CallKind::Call
+            }
+        } else {
+            CallKind::Call
+        }
+    } else {
+        CallKind::Call
+    };
+
+    let (final_name, final_receiver) = if matches!(kind, CallKind::Construct) {
+        // For `Foo.new`, the interesting target is `Foo` (the class), not the
+        // generic `new` method. Mirror C++ `new Foo()` which records the type.
+        (
+            receiver_text
+                .as_ref()
+                .map(|r| _last_const_segment_ruby(r))
+                .unwrap_or_else(|| name.clone()),
+            None,
+        )
+    } else {
+        (name, receiver_text)
+    };
+
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name: final_name,
+        receiver: final_receiver,
+        line,
+        kind,
+    })
+}
+
+fn _looks_like_constant_ruby(text: &str) -> bool {
+    text.chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
+}
+
+fn _last_const_segment_ruby(text: &str) -> String {
+    text.rsplit("::")
+        .next()
+        .unwrap_or(text)
+        .trim()
+        .to_string()
 }
