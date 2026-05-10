@@ -1,6 +1,6 @@
 # ast-outline
 
-Fast, AST-based **code-navigation toolkit** for source files — read the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, and search the repo by *symbol or behaviour*. Twelve subcommands, one binary, built for LLM coding agents and humans who'd rather not waste tokens reading every file just to understand a codebase.
+Fast, AST-based **code-navigation toolkit** for source files — read the *shape* of a file (signatures with line numbers, no method bodies), the *true public API* of a package, the *dependency graph* between files, the *call graph* between symbols, and search the repo by *symbol or behaviour*. Fourteen subcommands, one binary, built for LLM coding agents and humans who'd rather not waste tokens reading every file just to understand a codebase.
 
 `ast-outline` is written in Rust, leveraging the incredibly fast [ast-grep](https://github.com/ast-grep/ast-grep) bindings for [tree-sitter](https://tree-sitter.github.io/tree-sitter/), and uses [rayon](https://github.com/rayon-rs/rayon) to parse your entire workspace concurrently in milliseconds. The `show`/`digest`/`implements` commands were inspired by [dim-s/code-outline](https://github.com/dim-s/code-outline). The Rust code itself originated from a larger code-agent project and is not a direct port.
 
@@ -21,9 +21,10 @@ Modern agentic coding tools explore codebases by reading files directly. That's 
 
 1. **Shape over bytes.** `map` / `digest` / `show` give you signatures and line ranges instead of method bodies — typically a **95% token saving** vs reading the file. `implements` finds subclasses with AST accuracy, no `grep` false positives.
 2. **Published API in one call.** `surface` resolves `pub use` re-exports (Rust), `__all__` (Python), barrel files (TypeScript), `export` clauses (Scala) so you see the surface a downstream user actually sees — not the union of every public item per file.
-3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/deps/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
-4. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
-5. **Twelve native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-outline install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
+3. **Dependency graph for free.** `deps` / `reverse-deps` / `cycles` / `graph` build a file-level import graph (Rust, Python, TS/JS, Java, C#, Kotlin, Scala, Go) cached at `.ast-outline/graph/`. Use `reverse-deps` before refactoring to know the blast radius. `cycles` exits non-zero — wire it into a CI gate. `graph` emits the full dependency graph (text by default, `--json` for JSON).
+4. **Symbol-level call graph.** `callers` / `callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages — no `grep` false positives on overloaded names, comments, or string literals. Both are kind-aware: ask for a function and you get call-sites; ask for a type and you get implementors / constructions / ancestors. A three-pass resolver (same-file → global symbol table → dep-graph disambiguation) tags every edge `Exact` / `Inferred` / `Ambiguous` so you can filter by precision. Same on-disk cache as the dep graph.
+5. **Hybrid semantic search.** `search` runs BM25 + dense embeddings via [`potion-code-16M`](https://huggingface.co/minishlab/potion-code-16M) (a static, no-inference model — ~64 MB, runs on CPU in microseconds). `find-related` returns chunks structurally similar to one you already have, with a dep-graph-aware boost when a graph cache exists.
+6. **Fourteen native MCP tools.** Every CLI command is also exposed as an MCP tool — `ast-outline install --mcp <agent>` wires it into Claude Code, Cursor, Gemini, Codex, or VS Code Copilot in one line.
 
 ### The workflow
 
@@ -46,11 +47,13 @@ Agent: ast-outline implements IDamageable     # precise list, no grep noise
 Agent: ast-outline search "damage handling"   # hybrid BM25 + dense semantic, ranked
 Agent: ast-outline show Player.cs TakeDamage  # just the method body
 Agent: ast-outline reverse-deps Player.cs     # who imports this — blast radius before refactor
+Agent: ast-outline callers Player.TakeDamage  # AST-accurate call sites — no grep false positives
+Agent: ast-outline callees Player.TakeDamage  # what TakeDamage itself calls
 Agent: ast-outline cycles src/                # find import cycles via Tarjan SCC
 ```
 
 Result: **same understanding, a fraction of the tokens, a fraction of the round-trips.**
-For "what does this package actually expose?" — historically the most expensive question, since the answer was "read every file" — `surface` resolves the re-export graph and gives you the answer directly, often replacing dozens of file reads with a single call. For "what would break if I change this file?" — `reverse-deps` gives you the impact set in one call instead of agent-grepping for usages.
+For "what does this package actually expose?" — historically the most expensive question, since the answer was "read every file" — `surface` resolves the re-export graph and gives you the answer directly, often replacing dozens of file reads with a single call. For "what would break if I change this method?" — `callers` gives you the AST-accurate set of call sites in one shot, instead of `grep`-ing a homonym across the repo.
 
 ---
 
@@ -173,6 +176,13 @@ ast-outline reverse-deps src/auth.rs    # who imports auth.rs (refactor blast ra
 ast-outline cycles                      # find import cycles via Tarjan SCC
 ast-outline graph .                     # full dependency graph (text)
 ast-outline graph . --json              # same, as JSON (ast-outline.graph.v1)
+
+# Call graph: who calls X, what does X call (AST-accurate, all 14 langs)
+ast-outline callers TakeDamage              # function/method: in-edges
+ast-outline callers Player                  # type: implementors + constructions
+ast-outline callees Player.TakeDamage       # function/method: out-edges
+ast-outline callees Player --depth 2        # type: ancestor walk (transitive)
+ast-outline callers src/Player.cs:TakeDamage --include-ambiguous
 
 # Hybrid BM25 + dense semantic search (builds an index on first call)
 ast-outline search "how does login work"
@@ -371,6 +381,8 @@ changes, so downstream tooling can guard on it:
 | `ast-outline.reverse-deps.v1` | `reverse-deps --json` |
 | `ast-outline.cycles.v1` | `cycles --json` |
 | `ast-outline.graph.v1` | `graph --json` |
+| `ast-outline.callers.v1` | `callers --json` |
+| `ast-outline.callees.v1` | `callees --json` |
 | `ast-outline.search.v1` | `search --json` |
 | `ast-outline.related.v1` | `find-related --json` |
 | `ast-outline.index-stats.v1` | `index --stats --json` |
@@ -387,7 +399,7 @@ as native tools — no shell parsing required:
 ast-outline mcp
 ```
 
-The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes twelve
+The server speaks line-delimited JSON-RPC 2.0 on stdin/stdout and exposes fourteen
 tools that map 1:1 to the CLI commands:
 
 | Tool | Equivalent CLI | Returns |
@@ -396,6 +408,8 @@ tools that map 1:1 to the CLI commands:
 | `digest`       | `ast-outline digest <paths>`             | text, or `ast-outline.map.v1` with `json: true` |
 | `show`         | `ast-outline show <path> <syms>`         | text, or `ast-outline.show.v1` with `json: true` |
 | `implements`   | `ast-outline implements <type> <paths>`  | text, or `ast-outline.implements.v1` with `json: true` |
+| `callers`      | `ast-outline callers <symbol>`           | text, or `ast-outline.callers.v1` with `json: true` |
+| `callees`      | `ast-outline callees <symbol>`           | text, or `ast-outline.callees.v1` with `json: true` |
 | `surface`      | `ast-outline surface [path]`             | text, or `ast-outline.surface.v1` with `json: true` |
 | `deps`         | `ast-outline deps <file>`                | text, or `ast-outline.deps.v1` with `json: true` |
 | `reverse_deps` | `ast-outline reverse-deps <file>`        | text, or `ast-outline.reverse-deps.v1` with `json: true` |
@@ -476,7 +490,7 @@ ast-outline graph .                              # full dependency graph (text)
 ast-outline graph . --json                      # same, as JSON (ast-outline.graph.v1)
 ```
 
-All four commands share one dep graph cached at `.ast-outline/deps/graph.bin`. First call builds it (~hundreds of ms for typical repos via the same `ignore`-respecting walk used by search); subsequent calls reuse it via mtime-based delta detection, with `--rebuild` to force a fresh build.
+All four commands share one cache at `.ast-outline/graph/index.bin` (a unified `UnifiedGraph { deps, calls: Option<CallGraph> }` — same file used by `callers` / `callees`, see below). First call builds the dep half (~hundreds of ms for typical repos via the same `ignore`-respecting walk used by search); subsequent calls reuse it via per-file delta detection, with `--rebuild` to force a fresh build. Inside `ast-outline mcp`, every `tools/call` shares one in-memory `Arc<UnifiedGraph>` so the second invocation in a session is a memory read, not a disk read.
 
 Resolution is per-language but shares one suffix-index resolver:
 
@@ -486,7 +500,42 @@ Resolution is per-language but shares one suffix-index resolver:
 - **Java / Kotlin / Scala / C#**: FQN suffix index built from each file's `package` / `namespace` declaration. Inner classes resolve via strip-and-retry.
 - **Go**: `go.mod` `module` prefix is stripped; `import "mymod/pkg/foo"` resolves to `pkg/foo/*.go` (directory-as-package).
 
-The four commands are also exposed as MCP tools for agents.
+The four commands are also exposed as MCP tools for agents. For internals (suffix index, Tarjan SCC, per-file invalidation, find-related dep boost) see the [deps wiki page](https://github.com/aeroxy/ast-outline/blob/main/wiki/deps.md) on GitHub.
+
+---
+
+## Call graph
+
+`ast-outline callers` and `ast-outline callees` answer "who calls X" and "what does X call" with AST accuracy across all 14 languages. They replace `grep` for refactor blast-radius assessment — no false positives on overloaded names, comments, or string literals.
+
+```bash
+ast-outline callers TakeDamage              # function/method: in-edges
+ast-outline callees TakeDamage              # function/method: out-edges
+ast-outline callers Player                  # type: implementors + constructions
+ast-outline callees Player --depth 2        # type: ancestor walk (transitive)
+ast-outline callers Player.TakeDamage --include-ambiguous --json
+```
+
+Both commands are **kind-aware**:
+
+| Target kind | `callers X` | `callees X` |
+|---|---|---|
+| function / method / constructor | call sites that invoke `X` | call sites inside `X`'s body |
+| class / struct / trait / interface / enum / record | implementors + constructions (covers `Foo()`, `new Foo()`, `Foo {}`, `Foo::new()`) | ancestor types and the methods they declare (transitive via `--depth N`) |
+
+Symbol forms accepted by both: bare suffix (`TakeDamage`), dotted (`Player.TakeDamage`), file-scoped (`src/Player.cs:TakeDamage`), or flag form (`--file src/Player.cs --symbol TakeDamage`).
+
+**Three-pass resolver.** Bare names are disambiguated in three increasing-cost passes:
+
+1. **Same-file** — local definitions + per-file `import` / `use` / `using` bindings.
+2. **Global symbol table** — single-match promotion across the project. Receiver-bearing calls (`obj.bar()`) skip this pass to avoid `builder.hidden()`-style false positives on global homonyms.
+3. **Dep-graph disambiguation** — for ambiguous matches, filter candidates by the caller's transitive forward-dep closure.
+
+Every edge carries a `Confidence` tag — `Exact` (passes A/B), `Inferred` (pass C narrowed to one), or `Ambiguous` (multiple candidates survive). `--include-ambiguous` (callers) and `--external` (callees) surface the noisier results when explicitly requested.
+
+**Cache.** Same `.ast-outline/graph/index.bin` as the dep graph, lazily promoted — users who only run `deps` / `cycles` never pay the call-graph build cost. Per-file invalidation: edit one file, only that file gets re-extracted and re-resolved.
+
+For internals (per-language node-kind tables, the call-shape pitfalls each adapter handles, the per-file patch path, cost numbers) see the [calls wiki page](https://github.com/aeroxy/ast-outline/blob/main/wiki/calls.md) on GitHub.
 
 ---
 

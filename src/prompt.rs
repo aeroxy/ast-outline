@@ -7,6 +7,8 @@ Commands:
   show          Extract source of a symbol
   digest        One-page module map
   implements    Find subclasses / implementations
+  callers       Who calls this function/method, or constructs/implements this type
+  callees       What does this function/method call, or which ancestors does this type extend
   prompt        Print the agent prompt snippet
   status        Report what's installed where
   hook          Internal: read a tool-call event from stdin and respond
@@ -40,7 +42,13 @@ Stop at the step that answers the question:
 
 7. **The actual published API of a package** — `ast-outline surface <dir>`: resolves `pub use` re-exports (Rust) and `__all__` (Python) so you see exactly what a downstream user can reach, not the union of every `pub`/non-underscore item. Falls back to visibility-filtered output for Java/C#/Go/Kotlin (no real re-export concept). Use `--tree` for hierarchy, `--include-chain` to see the re-export path each entry took.
 
-8. **What does this file pull in / who depends on it / are there cycles?** — file-level dep-graph commands. First call builds a graph at `.ast-outline/deps/graph.bin` (~hundreds of ms for typical repos); subsequent calls reuse it.
+8. **Who calls / what does this call?** — symbol-level call graph, AST-accurate, no `grep` noise. Backed by the unified graph cache at `.ast-outline/graph/index.bin` (built lazily, per-file invalidated, shared across MCP `tools/call`s).
+   - `ast-outline callers <Symbol> [<dir>]`: in-edges. For a function/method: the call sites that invoke it. For a type: implementors and constructions (covers `Foo()`, `new Foo()`, `Foo {}`, `Foo::new()`).
+   - `ast-outline callees <Symbol> [<dir>]`: out-edges. For a function/method: what it calls. For a type: ancestor types and the methods they declare (use `--depth N` for transitive).
+   - Symbol forms: bare suffix (`TakeDamage`), dotted (`Player.TakeDamage`), file-scoped (`src/Player.cs:TakeDamage`), or flag form (`--file src/Player.cs --symbol TakeDamage`).
+   - Edges carry `Exact` / `Inferred` / `Ambiguous` confidence. Add `--include-ambiguous` (callers) or `--external` (callees) when you want the noisier bucket.
+
+9. **What does this file pull in / who depends on it / are there cycles?** — file-level dep-graph commands. Same unified cache as `callers`/`callees`.
    - `ast-outline deps <file> [--depth N]`: forward — what `<file>` imports (transitively).
    - `ast-outline reverse-deps <file> [--depth N]`: backward — who imports `<file>`. Use before refactoring to know the blast radius.
    - `ast-outline cycles [<dir>]`: import cycles via Tarjan SCC. Exits non-zero when cycles exist (CI gate).
@@ -49,6 +57,7 @@ Stop at the step that answers the question:
 **Path type expectations:**
 - `deps`, `reverse-deps` → expect a **file** path
 - `graph`, `cycles` → expect a **directory** (repo root)
+- `callers`, `callees` → symbol first, optional **directory** (defaults to `.`)
 
 Fall back to a full read only when you need context beyond the body `show` returned. If the map header contains `# WARNING: N parse errors`, the map for that file is partial — read the source directly for the affected region.
 "#;
