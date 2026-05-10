@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -467,6 +467,7 @@ fn _function_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration 
         .trim()
         .to_string();
 
+    let calls = _extract_calls(node, src);
     let range = node.range();
     Declaration {
         kind: DeclarationKind::Function,
@@ -486,7 +487,7 @@ fn _function_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration 
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     }
 }
 
@@ -500,6 +501,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         .trim()
         .to_string();
 
+    let calls = _extract_calls(node, src);
     let range = node.range();
     Declaration {
         kind: DeclarationKind::Method,
@@ -519,7 +521,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     }
 }
 
@@ -775,4 +777,99 @@ fn _slice_until_brace<'a, D: Doc>(
         .trim_end_matches('{')
         .trim()
         .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
+    let mut out = Vec::new();
+    let body = node.field("body").unwrap_or_else(|| node.clone());
+    _walk_calls_in_body(&body, src, &mut out);
+    out
+}
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_declaration" | "method_declaration" | "func_literal"
+    ) {
+        return;
+    }
+
+    if kind == "call_expression" {
+        if let Some(cs) = _call_site_from_call_go(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call_go<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let func = node.field("function")?;
+    let (name, receiver, kind) = _split_callee_go(&func, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver,
+        line,
+        kind,
+    })
+}
+
+fn _split_callee_go<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<(String, Option<String>, CallKind)> {
+    let kind = node.kind();
+    let kind_ref: &str = kind.as_ref();
+    match kind_ref {
+        "identifier" => {
+            let text = String::from_utf8_lossy(&src[node.range()]).to_string();
+            // Built-in `new(T)` is a constructor-like call in Go; tree-sitter
+            // models it as a regular call_expression with `function = identifier "new"`.
+            // Leave classification as Call — Go has no per-type constructor.
+            Some((text, None, CallKind::Call))
+        }
+        "selector_expression" => {
+            let field = node.field("field")?;
+            let operand = node.field("operand");
+            let name = String::from_utf8_lossy(&src[field.range()]).to_string();
+            let receiver = operand
+                .map(|o| collapse_ws(&String::from_utf8_lossy(&src[o.range()])));
+            Some((name, receiver, CallKind::Call))
+        }
+        "index_expression" | "parenthesized_expression" => {
+            let inner = node.field("operand").or_else(|| {
+                node.children().find(|c| c.is_named())
+            })?;
+            _split_callee_go(&inner, src)
+        }
+        _ => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            let collapsed = collapse_ws(&raw);
+            if collapsed.is_empty() {
+                return None;
+            }
+            let name = collapsed
+                .rsplit('.')
+                .next()
+                .unwrap_or(&collapsed)
+                .split('[')
+                .next()
+                .unwrap_or(&collapsed)
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name, None, CallKind::Call))
+        }
+    }
 }

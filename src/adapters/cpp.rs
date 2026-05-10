@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -307,7 +307,7 @@ fn _function_to_decl<'a, D: Doc>(
     src: &[u8],
     inside_class: bool,
 ) -> Option<Declaration> {
-    let name = field_text(node, "declarator")
+    let name = _function_definition_name(node)
         .or_else(|| field_text(node, "name"))
         .unwrap_or_else(|| "?".to_string());
 
@@ -339,6 +339,7 @@ fn _function_to_decl<'a, D: Doc>(
     sig.push_str(&params.join(", "));
     sig.push(')');
 
+    let calls = _extract_calls(node, src);
     let range = node.range();
     Some(Declaration {
         kind,
@@ -363,7 +364,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     })
 }
 
@@ -474,4 +475,188 @@ fn _function_params<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Vec<String> 
         }
     }
     params
+}
+
+/// Extract just the bare callable name from a `function_definition` node by
+/// drilling through its `function_declarator` to the inner declarator.
+/// `field_text(node, "declarator")` returns the full `greet()` text instead
+/// of `greet`, which breaks suffix matching for `callers` / `callees`.
+fn _function_definition_name<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
+    let declarator = node.field("declarator")?;
+    _drill_function_declarator_name(&declarator)
+}
+
+fn _drill_function_declarator_name<'a, D: Doc>(node: &Node<'a, D>) -> Option<String> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "function_declarator" => {
+            let inner = node.field("declarator")?;
+            _drill_function_declarator_name(&inner)
+        }
+        "pointer_declarator" | "reference_declarator" | "parenthesized_declarator" => {
+            let inner = node.field("declarator").or_else(|| {
+                node.children().find(|c| c.is_named())
+            })?;
+            _drill_function_declarator_name(&inner)
+        }
+        "identifier" | "field_identifier" | "operator_name" | "destructor_name" => {
+            Some(collapse_ws(&node.text()).trim().to_string())
+        }
+        "qualified_identifier" | "scoped_identifier" => {
+            // For out-of-line method definitions: `Foo::bar` → just `bar`.
+            let text = collapse_ws(&node.text());
+            Some(text.rsplit("::").next().unwrap_or(&text).trim().to_string())
+        }
+        _ => Some(collapse_ws(&node.text()).trim().to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
+    let mut out = Vec::new();
+    let body = node.field("body").unwrap_or_else(|| node.clone());
+    _walk_calls_in_body(&body, src, &mut out);
+    out
+}
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_definition"
+            | "lambda_expression"
+            | "class_specifier"
+            | "struct_specifier"
+            | "namespace_definition"
+    ) {
+        return;
+    }
+
+    if kind == "call_expression" {
+        if let Some(cs) = _call_site_from_call_cpp(node, src) {
+            out.push(cs);
+        }
+    } else if kind == "new_expression" {
+        if let Some(cs) = _call_site_from_new_expression(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call_cpp<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let func = node.field("function")?;
+    let (name, receiver) = _split_callee_cpp(&func, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver,
+        line,
+        kind: CallKind::Call,
+    })
+}
+
+fn _call_site_from_new_expression<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<CallSite> {
+    let type_node = node.field("type").or_else(|| {
+        node.children()
+            .find(|c| c.is_named() && c.kind() != "new")
+    })?;
+    let raw = String::from_utf8_lossy(&src[type_node.range()]).to_string();
+    let name = _last_type_segment_cpp(&raw);
+    if name.is_empty() {
+        return None;
+    }
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver: None,
+        line,
+        kind: CallKind::Construct,
+    })
+}
+
+fn _split_callee_cpp<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<(String, Option<String>)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" | "field_identifier" | "destructor_name" => {
+            let text = String::from_utf8_lossy(&src[node.range()]).to_string();
+            Some((text, None))
+        }
+        "field_expression" => {
+            let field = node.field("field")?;
+            let arg = node.field("argument");
+            let name = String::from_utf8_lossy(&src[field.range()]).to_string();
+            let receiver = arg
+                .map(|a| collapse_ws(&String::from_utf8_lossy(&src[a.range()])));
+            Some((name, receiver))
+        }
+        "qualified_identifier" | "scoped_identifier" => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            let collapsed = collapse_ws(&raw);
+            let name = collapsed.rsplit("::").next().unwrap_or(&collapsed).to_string();
+            let receiver = if collapsed.contains("::") {
+                let cut = collapsed.rfind("::").unwrap();
+                Some(collapsed[..cut].to_string())
+            } else {
+                None
+            };
+            Some((name, receiver))
+        }
+        "template_function" => {
+            let name_node = node.field("name").or_else(|| {
+                node.children().find(|c| c.is_named())
+            })?;
+            _split_callee_cpp(&name_node, src)
+        }
+        _ => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            let collapsed = collapse_ws(&raw);
+            if collapsed.is_empty() {
+                return None;
+            }
+            let name = collapsed
+                .rsplit("::")
+                .next()
+                .unwrap_or(&collapsed)
+                .rsplit('.')
+                .next()
+                .unwrap_or(&collapsed)
+                .split('<')
+                .next()
+                .unwrap_or(&collapsed)
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name, None))
+        }
+    }
+}
+
+fn _last_type_segment_cpp(text: &str) -> String {
+    let head = text.split('<').next().unwrap_or(text).trim();
+    head.rsplit("::")
+        .next()
+        .unwrap_or(head)
+        .rsplit('.')
+        .next()
+        .unwrap_or(head)
+        .trim()
+        .to_string()
 }

@@ -562,6 +562,152 @@ object Greeter {
 }
 
 #[test]
+fn cpp_callers_finds_intra_file_caller() {
+    // Single-file C++: pingTwice() calls greet(). The C++ adapter walks
+    // call_expression nodes inside the function body; pass A in resolve.rs
+    // promotes the bare `greet` to the same-file qn.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.10)\nproject(smoke)\n",
+    );
+    write(
+        &root.join("src/greeter.cpp"),
+        r#"
+#include <cstdio>
+void greet() { printf("hi"); }
+void pingTwice() { greet(); greet(); }
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn cpp_callees_lists_construct_and_invocation() {
+    // `run()` exercises both call kinds the C++ adapter classifies:
+    //   `new Greeter()` → CallKind::Construct, name="Greeter"
+    //   `g->greet()`    → CallKind::Call,      name="greet"
+    // The construct stays unresolved (the resolver matches against
+    // callables, not types), so we pass `--external` to surface
+    // unresolved/external edges. JSON output is asserted to make the
+    // two edges distinguishable — text output would let "Greeter"
+    // match the substring inside `Greeter::greet`, hiding bugs.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.10)\nproject(smoke)\n",
+    );
+    write(
+        &root.join("src/demo.cpp"),
+        r#"
+class Greeter {
+public:
+    int greet() { return 42; }
+};
+
+int run() {
+    Greeter* g = new Greeter();
+    int n = g->greet();
+    delete g;
+    return n;
+}
+"#,
+    );
+    let (out, code) = run_in(
+        root,
+        &["callees", "run", ".", "--rebuild", "--external", "--json", "--compact"],
+    );
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    let v: serde_json::Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("invalid JSON ({}):\n{}", e, out));
+    let matches = v["matches"].as_array().expect("matches array");
+
+    let has_construct = matches.iter().any(|m| {
+        m["kind"] == "construct" && m["target"].as_str() == Some("[unresolved] Greeter")
+    });
+    assert!(
+        has_construct,
+        "expected a construct edge targeting `Greeter`, got:\n{}",
+        out
+    );
+
+    let has_call = matches.iter().any(|m| {
+        m["kind"] == "call" && m["target"].as_str() == Some("src/demo.cpp::Greeter::greet")
+    });
+    assert!(
+        has_call,
+        "expected a call edge resolved to `Greeter::greet`, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn go_callers_finds_intra_file_caller() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("go.mod"), "module smoke\n\ngo 1.21\n");
+    write(
+        &root.join("greeter.go"),
+        r#"
+package smoke
+
+import "fmt"
+
+func greet() { fmt.Println("hi") }
+func pingTwice() { greet(); greet() }
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn go_method_callers_finds_receiver_method_caller() {
+    // Method on a receiver type: pingTwice() calls g.greet(). Selector
+    // expression's `field` carries the bare name; pass A maps it.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(&root.join("go.mod"), "module smoke\n\ngo 1.21\n");
+    write(
+        &root.join("greeter.go"),
+        r#"
+package smoke
+
+import "fmt"
+
+type Greeter struct{}
+
+func (g *Greeter) greet() { fmt.Println("hi") }
+func pingTwice() {
+    g := &Greeter{}
+    g.greet()
+    g.greet()
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
 fn callers_unknown_symbol_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
