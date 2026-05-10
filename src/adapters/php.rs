@@ -20,6 +20,7 @@ impl LanguageAdapter for PhpAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports: Vec::new(),
         }
     }
 }
@@ -122,6 +123,7 @@ fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declarat
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -162,6 +164,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -209,6 +212,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers,
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -270,6 +274,7 @@ fn _namespace_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Decl
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -300,6 +305,7 @@ fn _const_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -349,6 +355,7 @@ fn _property_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Decl
         modifiers,
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 

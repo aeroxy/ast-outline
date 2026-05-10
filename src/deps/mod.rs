@@ -10,7 +10,6 @@
 //! The resulting `DepGraph` powers `deps`, `reverse-deps`, `cycles`,
 //! `graph`, and the dep-aware ranking boost in `find-related`.
 
-pub mod cache;
 pub mod cli;
 pub mod extract;
 pub mod graph;
@@ -120,54 +119,7 @@ pub fn build_graph(root: &Path) -> Result<DepGraph, DepError> {
     Ok(g)
 }
 
-/// Load from cache when fresh; otherwise build + persist.
-pub fn load_or_build(root: &Path, force_rebuild: bool) -> Result<DepGraph, DepError> {
-    if !force_rebuild {
-        if let Some(g) = cache::load_if_fresh(root) {
-            return Ok(g);
-        }
-    }
-    let g = build_graph(root)?;
-    // Persist (best-effort — failure is non-fatal).
-    if let Ok(records) = collect_file_records(root) {
-        let _ = cache::save(root, &g, &records);
-    }
-    Ok(g)
-}
-
-/// Build a `Vec<FileRecord>` describing the current state of every
-/// indexable file in `root`. Reuses search's `compute_delta` against an
-/// empty cache to populate hashes.
-fn collect_file_records(root: &Path) -> std::io::Result<Vec<crate::search::cache::FileRecord>> {
-    use crate::search::cache::{compute_delta, FileRecord, hash_file};
-
-    let delta = compute_delta(root, root, &[]);
-    let mut out = Vec::with_capacity(delta.added.len());
-    for path in delta.added {
-        let meta = std::fs::metadata(&path)?;
-        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let mtime_ns = match mtime.duration_since(std::time::SystemTime::UNIX_EPOCH) {
-            Ok(d) => d.as_nanos() as i128,
-            Err(e) => -(e.duration().as_nanos() as i128),
-        };
-        let rel = path
-            .strip_prefix(root)
-            .map(|r| {
-                r.components()
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .collect::<Vec<_>>()
-                    .join("/")
-            })
-            .unwrap_or_else(|_| path.display().to_string());
-        let hash = hash_file(&path).unwrap_or(0);
-        out.push(FileRecord {
-            path: rel,
-            mtime_ns,
-            size: meta.len(),
-            content_hash: hash,
-            chunk_start: 0,
-            chunk_end: 0,
-        });
-    }
-    Ok(out)
-}
+// `load_or_build` and `collect_file_records` moved to `crate::graph_cache::cache`
+// when the unified deps+calls cache landed. All consumers now go through
+// `graph_cache::shared::get_or_init` so the in-process `Arc<UnifiedGraph>` is
+// reused across MCP `tools/call`s instead of re-deserialising per call.

@@ -20,6 +20,7 @@ impl LanguageAdapter for CppAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports: Vec::new(),
         }
     }
 }
@@ -102,6 +103,7 @@ fn _namespace_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Decl
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -181,6 +183,7 @@ fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declarat
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -229,6 +232,7 @@ fn _ctor_decl_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Dec
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -294,6 +298,7 @@ fn _method_decl_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<D
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -358,6 +363,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -398,6 +404,7 @@ fn _enum_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declarat
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -433,6 +440,7 @@ fn _field_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 

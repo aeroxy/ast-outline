@@ -20,6 +20,7 @@ impl LanguageAdapter for RubyAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports: Vec::new(),
         }
     }
 }
@@ -103,6 +104,7 @@ fn _module_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -176,6 +178,7 @@ fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declarat
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -203,6 +206,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -237,6 +241,7 @@ fn _singleton_method_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -277,6 +282,7 @@ fn _call_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declarat
             modifiers: Vec::new(),
             deprecated: false,
             children: Vec::new(),
+            calls: Vec::new(),
         });
     }
 
@@ -312,6 +318,7 @@ fn _call_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Declarat
             modifiers: Vec::new(),
             deprecated: false,
             children: Vec::new(),
+            calls: Vec::new(),
         });
     }
 
@@ -344,6 +351,7 @@ fn _assignment_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<De
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -370,6 +378,7 @@ fn _constant_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<Decl
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 

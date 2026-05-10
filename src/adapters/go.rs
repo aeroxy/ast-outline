@@ -20,6 +20,7 @@ impl LanguageAdapter for GoAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports: Vec::new(),
         }
     }
 }
@@ -159,6 +160,7 @@ fn _package_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Declaration 
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -240,6 +242,7 @@ fn _type_spec_to_decl<'a, D: Doc>(
             modifiers: Vec::new(),
             deprecated: false,
             children,
+            calls: Vec::new(),
         });
     }
 
@@ -268,6 +271,7 @@ fn _type_spec_to_decl<'a, D: Doc>(
             modifiers: Vec::new(),
             deprecated: false,
             children,
+            calls: Vec::new(),
         });
     }
 
@@ -300,6 +304,7 @@ fn _type_spec_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -337,6 +342,7 @@ fn _type_alias_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -382,6 +388,7 @@ fn _struct_members_and_bases<'a, D: Doc>(
                     modifiers: Vec::new(),
                     deprecated: false,
                     children: Vec::new(),
+                    calls: Vec::new(),
                 });
             } else if let Some(base) = _embedded_base_name(&fd) {
                 bases.push(base);
@@ -420,6 +427,7 @@ fn _interface_members_and_bases<'a, D: Doc>(
                     modifiers: Vec::new(),
                     deprecated: false,
                     children: Vec::new(),
+                    calls: Vec::new(),
                 });
             }
         } else if c.kind() == "type_elem" {
@@ -478,6 +486,7 @@ fn _function_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration 
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -510,6 +519,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -661,6 +671,7 @@ fn _spec_to_field<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 

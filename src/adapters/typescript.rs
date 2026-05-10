@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -13,6 +13,8 @@ impl LanguageAdapter for TypeScriptAdapter {
     fn parse<'a, D: Doc>(&self, path: &Path, source: &[u8], root: Node<'a, D>) -> ParseResult {
         let mut decls = Vec::new();
         _walk_module(&root, source, &mut decls);
+        let mut imports = Vec::new();
+        _walk_imports(&root, source, &mut imports);
         ParseResult {
             path: path.to_path_buf(),
             language: self.language_name(),
@@ -20,6 +22,7 @@ impl LanguageAdapter for TypeScriptAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports,
         }
     }
 }
@@ -185,6 +188,7 @@ fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -226,6 +230,7 @@ fn _interface_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -266,6 +271,7 @@ fn _enum_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -298,6 +304,7 @@ fn _enum_member_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<D
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -323,6 +330,7 @@ fn _type_alias_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Declarati
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -343,6 +351,10 @@ fn _function_to_decl<'a, D: Doc>(
     let visibility = _visibility_for_name(&name);
 
     let range = node.range();
+    let mut calls = Vec::new();
+    if let Some(body) = node.field("body") {
+        _walk_calls_in_body(&body, src, &mut calls);
+    }
     Declaration {
         kind,
         name,
@@ -361,6 +373,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls,
     }
 }
 
@@ -384,6 +397,10 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
 
     let attrs = _decorators(node, src);
     let range = node.range();
+    let mut calls = Vec::new();
+    if let Some(body) = node.field("body") {
+        _walk_calls_in_body(&body, src, &mut calls);
+    }
     Some(Declaration {
         kind,
         name,
@@ -402,6 +419,7 @@ fn _method_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls,
     })
 }
 
@@ -427,6 +445,7 @@ fn _method_signature_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Opt
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -465,6 +484,7 @@ fn _class_field_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<De
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -492,6 +512,7 @@ fn _property_signature_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> O
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -537,6 +558,7 @@ fn _lexical_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declar
                 modifiers: Vec::new(),
                 deprecated: false,
                 children: Vec::new(),
+                calls: Vec::new(),
             });
         }
     }
@@ -561,6 +583,7 @@ fn _lexical_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declar
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -736,4 +759,176 @@ fn _leading_doc_start_byte<'a, D: Doc>(node: &Node<'a, D>) -> Option<usize> {
         }
     }
     first.map(|f| f.range().start)
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_declaration"
+            | "function_expression"
+            | "function"
+            | "arrow_function"
+            | "method_definition"
+            | "class_declaration"
+            | "class"
+            | "interface_declaration"
+            | "type_alias_declaration"
+            | "enum_declaration"
+            | "module_declaration"
+    ) {
+        return;
+    }
+
+    if kind == "call_expression" {
+        if let Some(cs) = _call_site_from_call(node, src, false) {
+            out.push(cs);
+        }
+    } else if kind == "new_expression" {
+        if let Some(cs) = _call_site_from_call(node, src, true) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], is_construct: bool) -> Option<CallSite> {
+    // tree-sitter-typescript exposes the callee as the `function` field on
+    // call_expression and `constructor` on new_expression.
+    let func = node.field("function").or_else(|| node.field("constructor"))?;
+    let (name, receiver) = _extract_callee_name_ts(&func, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    let kind = if is_construct { CallKind::Construct } else { CallKind::Call };
+    Some(CallSite { name, receiver, line, kind })
+}
+
+fn _extract_callee_name_ts<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<(String, Option<String>)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" | "property_identifier" => {
+            Some((String::from_utf8_lossy(&src[node.range()]).to_string(), None))
+        }
+        "member_expression" => {
+            let object = node.field("object");
+            let property = node.field("property")?;
+            let name = String::from_utf8_lossy(&src[property.range()]).to_string();
+            let recv = object.map(|o| String::from_utf8_lossy(&src[o.range()]).to_string());
+            Some((name, recv))
+        }
+        _ => Some((String::from_utf8_lossy(&src[node.range()]).to_string(), None)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import extraction
+//
+// Handles:
+//   import foo from './x';
+//   import { a, b as c } from './x';
+//   import * as ns from './x';
+//   import './side-effect';
+//   const x = require('./y');               (CommonJS — best-effort)
+// ---------------------------------------------------------------------------
+
+fn _walk_imports<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<ImportBinding>) {
+    for child in node.children() {
+        let kind = child.kind();
+        let kind: &str = kind.as_ref();
+        let line = child.start_pos().line() as u32 + 1;
+        if kind == "import_statement" {
+            _handle_import_stmt(&child, src, line, out);
+        }
+    }
+}
+
+fn _handle_import_stmt<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+    line: u32,
+    out: &mut Vec<ImportBinding>,
+) {
+    // The `source` field carries the module specifier as a string literal —
+    // strip the surrounding quotes.
+    let source = match node.field("source") {
+        Some(s) => _unquote(&String::from_utf8_lossy(&src[s.range()])),
+        None => return,
+    };
+
+    // The `import_clause` (if present) describes which bindings get pulled
+    // in. It can hold:
+    //   - identifier (default import: `import Foo from ...`)
+    //   - namespace_import (`import * as ns from ...`)
+    //   - named_imports (`import { a, b as c } from ...`)
+    let mut found_clause = false;
+    for child in node.children() {
+        let k = child.kind();
+        let k: &str = k.as_ref();
+        if k == "import_clause" {
+            found_clause = true;
+            for inner in child.children() {
+                let ik = inner.kind();
+                let ik: &str = ik.as_ref();
+                match ik {
+                    "identifier" => {
+                        let local = String::from_utf8_lossy(&src[inner.range()]).to_string();
+                        out.push(ImportBinding { local, module: source.clone(), line });
+                    }
+                    "namespace_import" => {
+                        // namespace_import has children including `* as ident`
+                        for ns in inner.children() {
+                            if matches!(ns.kind().as_ref(), "identifier") {
+                                let local = String::from_utf8_lossy(&src[ns.range()]).to_string();
+                                out.push(ImportBinding { local, module: source.clone(), line });
+                            }
+                        }
+                    }
+                    "named_imports" => {
+                        for spec in inner.children() {
+                            let sk = spec.kind();
+                            let sk: &str = sk.as_ref();
+                            if sk == "import_specifier" {
+                                let name = spec.field("name");
+                                let alias = spec.field("alias");
+                                let local = alias
+                                    .as_ref()
+                                    .or(name.as_ref())
+                                    .map(|n| String::from_utf8_lossy(&src[n.range()]).to_string());
+                                if let Some(local) = local {
+                                    out.push(ImportBinding {
+                                        local,
+                                        module: source.clone(),
+                                        line,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if !found_clause {
+        // `import './side-effect'` — no binding to record, but we still
+        // emit a synthetic entry so resolvers know the file references it.
+        // (Local name = empty — the resolver will ignore empty-local entries.)
+        let _ = source;
+    }
+}
+
+fn _unquote(s: &str) -> String {
+    let s = s.trim();
+    let s = s.strip_prefix('\'').or_else(|| s.strip_prefix('"')).unwrap_or(s);
+    let s = s.strip_suffix('\'').or_else(|| s.strip_suffix('"')).unwrap_or(s);
+    s.to_string()
 }

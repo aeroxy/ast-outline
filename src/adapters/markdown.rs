@@ -26,6 +26,7 @@ pub fn parse_markdown(path: &Path, source: &[u8]) -> ParseResult {
         line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
         declarations: decls,
         error_count: 0, // Simplified for manual ts
+        imports: Vec::new(),
     }
 }
 
@@ -101,6 +102,7 @@ fn _section_to_decl_ts(node: tree_sitter::Node, src: &[u8]) -> Option<Declaratio
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     })
 }
 
@@ -165,6 +167,7 @@ fn _pseudo_section_from_heading_ts(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -189,6 +192,7 @@ fn _code_block_to_decl_ts(node: tree_sitter::Node, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 

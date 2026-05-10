@@ -20,6 +20,7 @@ impl LanguageAdapter for KotlinAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports: Vec::new(),
         }
     }
 }
@@ -102,6 +103,7 @@ fn _package_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Declaration 
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -173,6 +175,7 @@ fn _type_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -209,6 +212,7 @@ fn _object_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -245,6 +249,7 @@ fn _companion_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -354,6 +359,7 @@ fn _class_parameter_to_field<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Opti
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -392,6 +398,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -424,6 +431,7 @@ fn _secondary_ctor_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -469,6 +477,7 @@ fn _property_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -513,6 +522,7 @@ fn _enum_entry_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Dec
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -545,6 +555,7 @@ fn _type_alias_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Dec
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 

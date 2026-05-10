@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use crate::deps::render;
 use crate::deps::scc;
 use crate::deps::traverse;
-use crate::deps::{load_or_build, DepGraph};
+use crate::deps::DepGraph;
+use crate::graph_cache;
 use crate::project_root::{relative_posix, resolve_home, Marker};
+use std::sync::Arc;
 
 pub fn run_deps(
     file: &Path,
@@ -31,13 +33,14 @@ pub fn run_deps(
             return 2;
         }
     };
-    let graph = match load_or_build(&root, rebuild) {
+    let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
             return 1;
         }
     };
+    let graph = unified.deps.clone();
     let canonical = match canonicalise_in_root(file, &graph) {
         Some(p) => p,
         None => {
@@ -79,13 +82,14 @@ pub fn run_reverse_deps(
             return 2;
         }
     };
-    let graph = match load_or_build(&root, rebuild) {
+    let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
             return 1;
         }
     };
+    let graph = unified.deps.clone();
     let canonical = match canonicalise_in_root(file, &graph) {
         Some(p) => p,
         None => {
@@ -126,13 +130,14 @@ pub fn run_cycles(
             return 2;
         }
     };
-    let graph = match load_or_build(&root, rebuild) {
+    let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
             return 1;
         }
     };
+    let graph = unified.deps.clone();
     // Detect cycles on the full cached graph, then keep only those whose
     // members are entirely within the user's requested scope.
     let mut cycles = scc::detect(&graph, min_size);
@@ -181,13 +186,14 @@ pub fn run_graph(
             return 2;
         }
     };
-    let full = match load_or_build(&root, rebuild) {
+    let unified = match load_unified(&root, rebuild) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("# note: {}", e);
             return 1;
         }
     };
+    let full = unified.deps.clone();
     let graph = if scope.is_empty() {
         full
     } else {
@@ -278,6 +284,17 @@ pub fn find_root_for(file: &Path) -> Result<PathBuf, String> {
             .ok_or("no parent directory")?
             .to_path_buf()
     })
+}
+
+/// Load (or build) the unified graph for `root`, going through the shared
+/// in-memory `Arc` so repeated calls within one process — most importantly
+/// `ast-outline mcp` — reuse the same parsed graph instead of re-deserialising.
+fn load_unified(root: &Path, force_rebuild: bool) -> std::io::Result<Arc<crate::graph_cache::UnifiedGraph>> {
+    if force_rebuild {
+        graph_cache::shared::rebuild(root)
+    } else {
+        graph_cache::get_or_init(root)
+    }
 }
 
 fn canonicalise_in_root(file: &Path, graph: &DepGraph) -> Option<PathBuf> {

@@ -3,9 +3,11 @@ use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
 mod adapters;
+mod calls;
 mod core;
 mod deps;
 mod file_filter;
+mod graph_cache;
 mod prompt;
 mod installers;
 mod hook;
@@ -291,6 +293,67 @@ enum Commands {
         include_external: bool,
         #[arg(long)]
         rebuild: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// Find callers of a symbol — AST-accurate, no grep noise.
+    ///
+    /// Pass the symbol either as a positional `<TARGET>` (suffix-matched
+    /// like `show`/`implements`: `TakeDamage`, `Player.TakeDamage`, or
+    /// `src/Player.cs:TakeDamage` to scope to one file), or via
+    /// `--file <FILE> --symbol <NAME>` for scripting use.
+    Callers {
+        /// Symbol to look up. Optional when `--file` and `--symbol` are passed.
+        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+        target: Option<String>,
+        /// Repository root (default: ".").
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Alternative to the `<FILE>:<NAME>` positional form.
+        #[arg(long, requires = "symbol")]
+        file: Option<String>,
+        /// Symbol name when using `--file`.
+        #[arg(long, requires = "file")]
+        symbol: Option<String>,
+        /// Max BFS depth (1 = direct callers only).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// Cap result count (mirrors reverse-deps).
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Include callers whose target is `Ambiguous` (off by default — noisy).
+        #[arg(long)]
+        include_ambiguous: bool,
+        /// Force a fresh call-graph build.
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        compact: bool,
+    },
+    /// What does this symbol call? — AST-accurate forward call traversal.
+    ///
+    /// Same target-spec rules as `callers`: positional `<TARGET>` (with
+    /// optional `<FILE>:<NAME>` scoping) or `--file --symbol`.
+    Callees {
+        #[arg(required_unless_present_all = ["file", "symbol"], conflicts_with_all = ["file", "symbol"])]
+        target: Option<String>,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        #[arg(long, requires = "symbol")]
+        file: Option<String>,
+        #[arg(long, requires = "file")]
+        symbol: Option<String>,
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// Include unresolved callees (the `Bare`/`External` bucket).
+        #[arg(long)]
+        external: bool,
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        json: bool,
         #[arg(long)]
         compact: bool,
     },
@@ -849,6 +912,67 @@ fn main() {
                 );
                 std::process::exit(exit);
             }
+            Commands::Callers {
+                target,
+                path,
+                file,
+                symbol,
+                depth,
+                limit,
+                include_ambiguous,
+                rebuild,
+                json,
+                compact,
+            } => {
+                let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+                let exit = crate::calls::cli::run_callers(
+                    &resolved,
+                    path,
+                    *depth,
+                    *limit,
+                    *include_ambiguous,
+                    *rebuild,
+                    *json,
+                    !(*compact),
+                );
+                std::process::exit(exit);
+            }
+            Commands::Callees {
+                target,
+                path,
+                file,
+                symbol,
+                depth,
+                external,
+                rebuild,
+                json,
+                compact,
+            } => {
+                let resolved = compose_target(target.as_deref(), file.as_deref(), symbol.as_deref());
+                let exit = crate::calls::cli::run_callees(
+                    &resolved,
+                    path,
+                    *depth,
+                    *external,
+                    *rebuild,
+                    *json,
+                    !(*compact),
+                );
+                std::process::exit(exit);
+            }
+    }
+}
+
+/// Fold `--file <F> --symbol <S>` into the same `<file>:<symbol>` canonical
+/// form the positional `<TARGET>` arg uses. Clap's `required_unless_present_all`
+/// guarantees exactly one of the two arms is populated.
+fn compose_target(target: Option<&str>, file: Option<&str>, symbol: Option<&str>) -> String {
+    if let Some(t) = target {
+        return t.to_string();
+    }
+    match (file, symbol) {
+        (Some(f), Some(s)) => format!("{}:{}", f, s),
+        _ => unreachable!("clap guarantees target XOR (file && symbol)"),
     }
 }
 

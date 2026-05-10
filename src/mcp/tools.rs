@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::core::{
     self, DigestOptions, MapOptions,
@@ -207,6 +207,39 @@ pub fn list() -> Value {
                         "json":    { "type": "boolean" }
                     }
                 }
+            },
+            {
+                "name": "callers",
+                "description": "Find callers of a symbol — AST-accurate, no grep noise. Suffix-matches the target like `show`/`implements`: `TakeDamage`, or `Type.method` when ambiguous. Builds a unified deps+calls cache at `.ast-outline/deps/graph.bin` on first call (the call half is built lazily). Returns text by default; set `json: true` for `ast-outline.callers.v1`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target":            { "type": "string",  "description": "Symbol name to look up." },
+                        "path":              { "type": "string",  "description": "Repo root (default \".\")." },
+                        "depth":             { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
+                        "limit":             { "type": "integer", "description": "Cap result count (default 200).", "minimum": 1 },
+                        "include_ambiguous": { "type": "boolean", "description": "Keep callers whose target is unresolved." },
+                        "rebuild":           { "type": "boolean" },
+                        "json":              { "type": "boolean" }
+                    },
+                    "required": ["target"]
+                }
+            },
+            {
+                "name": "callees",
+                "description": "What does this symbol call? — AST-accurate forward call traversal. Suffix-matches the target like `callers`. Returns text by default; set `json: true` for `ast-outline.callees.v1`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target":   { "type": "string",  "description": "Symbol name to look up." },
+                        "path":     { "type": "string",  "description": "Repo root (default \".\")." },
+                        "depth":    { "type": "integer", "description": "Max BFS depth (default 1).", "minimum": 1 },
+                        "external": { "type": "boolean", "description": "Include unresolved/external callees in output." },
+                        "rebuild":  { "type": "boolean" },
+                        "json":     { "type": "boolean" }
+                    },
+                    "required": ["target"]
+                }
             }
         ]
     })
@@ -233,8 +266,87 @@ pub fn call(name: &str, args: Value) -> CallResult {
         "search"       => crate::search::mcp::run_search(args),
         "find_related" => crate::search::mcp::run_find_related(args),
         "index"        => crate::search::mcp::run_index(args),
+        "callers"      => run_callers(args),
+        "callees"      => run_callees(args),
         other => CallResult::Error(format!("unknown tool: {}", other)),
     }
+}
+
+// ---------- callers / callees ----------
+
+#[derive(serde::Deserialize)]
+struct CallersArgs {
+    target: String,
+    #[serde(default = "default_dot")]
+    path: PathBuf,
+    #[serde(default = "default_one")]
+    depth: usize,
+    #[serde(default = "default_two_hundred")]
+    limit: usize,
+    #[serde(default)]
+    include_ambiguous: bool,
+    #[serde(default)]
+    json: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct CalleesArgs {
+    target: String,
+    #[serde(default = "default_dot")]
+    path: PathBuf,
+    #[serde(default = "default_one")]
+    depth: usize,
+    #[serde(default)]
+    external: bool,
+    #[serde(default)]
+    json: bool,
+}
+
+fn default_one() -> usize { 1 }
+fn default_two_hundred() -> usize { 200 }
+fn default_dot() -> PathBuf { PathBuf::from(".") }
+
+fn run_callers(args: Value) -> CallResult {
+    let a: CallersArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return CallResult::Error(format!("bad args: {}", e)),
+    };
+    let root = match resolve_root(&a.path) {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(e),
+    };
+    let out = crate::calls::mcp::run_callers_text(
+        &a.target,
+        &root,
+        a.depth,
+        a.limit,
+        a.include_ambiguous,
+        a.json,
+    );
+    CallResult::Text(out)
+}
+
+fn run_callees(args: Value) -> CallResult {
+    let a: CalleesArgs = match serde_json::from_value(args) {
+        Ok(a) => a,
+        Err(e) => return CallResult::Error(format!("bad args: {}", e)),
+    };
+    let root = match resolve_root(&a.path) {
+        Ok(r) => r,
+        Err(e) => return CallResult::Error(e),
+    };
+    let out = crate::calls::mcp::run_callees_text(&a.target, &root, a.depth, a.external, a.json);
+    CallResult::Text(out)
+}
+
+fn resolve_root(path: &Path) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err(format!("path not found: {}", path.display()));
+    }
+    // Walk up from `path` to the nearest project manifest so qns are
+    // project-relative (`src/foo.rs::bar`, not `foo.rs::bar`). Matches the
+    // CLI's resolve_root.
+    crate::deps::cli::find_root_for(path)
 }
 
 #[derive(Deserialize, Default)]
@@ -518,7 +630,7 @@ fn run_deps(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
@@ -544,7 +656,7 @@ fn run_reverse_deps(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(e),
     };
-    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
@@ -569,7 +681,7 @@ fn run_cycles(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
     };
-    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };
@@ -590,7 +702,7 @@ fn run_graph(args: Value) -> CallResult {
         Ok(r) => r,
         Err(e) => return CallResult::Error(format!("cannot resolve {}: {}", a.path.display(), e)),
     };
-    let graph = match crate::deps::load_or_build(&root, a.rebuild) {
+    let graph = match crate::graph_cache::shared::get_or_init(&root).map(|u| u.deps.clone()) {
         Ok(g) => g,
         Err(e) => return CallResult::Error(e.to_string()),
     };

@@ -12,6 +12,13 @@ pub const JSON_SCHEMA_REVERSE_DEPS: &str = "ast-outline.reverse-deps.v1";
 pub const JSON_SCHEMA_CYCLES: &str = "ast-outline.cycles.v1";
 pub const JSON_SCHEMA_GRAPH: &str = "ast-outline.graph.v1";
 pub const JSON_SCHEMA_DEPS_INDEX: &str = "ast-outline.deps-index.v1";
+pub const JSON_SCHEMA_CALLERS: &str = "ast-outline.callers.v1";
+pub const JSON_SCHEMA_CALLEES: &str = "ast-outline.callees.v1";
+/// Unified on-disk cache holding both the file-level dep graph and (lazily)
+/// the symbol-level call graph. Bumped from the prior `deps-index.v1` to
+/// force a rebuild for users upgrading: the cache file shape now wraps
+/// `UnifiedGraph` instead of bare `DepGraph`.
+pub const JSON_SCHEMA_GRAPH_INDEX: &str = "ast-outline.graph-index.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Copy, Default)]
 pub enum DeclarationKind {
@@ -114,10 +121,83 @@ pub struct Declaration {
     pub deprecated: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Declaration>,
+    /// Raw call-sites that appear *directly* inside this declaration's body.
+    /// Does not include nested-declaration bodies — those have their own
+    /// `calls` lists. Adapters populate during their tree walk; left empty
+    /// when the adapter doesn't yet implement call-site extraction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<CallSite>,
 }
 
 fn _is_false(b: &bool) -> bool {
     !*b
+}
+
+/// One unresolved call-site as observed during AST walking. Resolution to
+/// a project-qualified name happens later in `src/calls/resolve.rs`.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct CallSite {
+    /// Bare callee name as written: `foo()` → "foo"; `obj.bar()` → "bar";
+    /// `Foo::baz()` → "baz".
+    pub name: String,
+    /// Receiver expression text when the callee is method-like
+    /// (`obj.bar()` → "obj"; `self.x()` → "self"; `Foo::baz()` → "Foo").
+    /// `None` for free-function calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver: Option<String>,
+    /// 1-indexed line of the call site.
+    pub line: u32,
+    /// Call kind — distinguishes a regular call from `new T()`, macro, etc.
+    #[serde(default, skip_serializing_if = "_call_kind_is_default")]
+    pub kind: CallKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CallKind {
+    #[default]
+    Call,
+    /// `new Foo()`, struct literal, Python class call, etc.
+    Construct,
+    /// Rust `macro!()`, C/C++ macro invocation.
+    Macro,
+    /// `super.foo()`, Rust `super::foo()`.
+    Super,
+}
+
+impl CallKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::Construct => "construct",
+            Self::Macro => "macro",
+            Self::Super => "super",
+        }
+    }
+}
+
+impl Serialize for CallKind {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+fn _call_kind_is_default(k: &CallKind) -> bool {
+    matches!(k, CallKind::Call)
+}
+
+/// One `import` / `use` / `using` binding from a source file. Populated by
+/// adapters; consumed by the call-graph resolver in pass A and useful as
+/// extra signal for downstream consumers.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ImportBinding {
+    /// Local name visible in this file: `Foo`, `bar`, `pd` (in
+    /// `import pandas as pd`).
+    pub local: String,
+    /// Module specifier as written: `crate::net::Bar`, `numpy.linalg`,
+    /// `./helpers`, `com.foo.Bar`.
+    pub module: String,
+    /// 1-indexed line of the import statement.
+    pub line: u32,
 }
 
 impl Declaration {
@@ -146,6 +226,11 @@ pub struct ParseResult {
     pub line_count: usize,
     pub error_count: usize,
     pub declarations: Vec<Declaration>,
+    /// Local-binding → module map for this file, populated by adapters from
+    /// `use` / `import` / `using` statements. Consumed by the call-graph
+    /// resolver in pass A.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<ImportBinding>,
 }
 
 #[derive(Debug, Clone)]

@@ -121,6 +121,7 @@ pub fn parse_sql(path: &Path, source: &str) -> ParseResult {
         line_count: line_starts.len(),
         declarations: decls,
         error_count: 0,
+        imports: Vec::new(),
     }
 }
 
@@ -172,6 +173,7 @@ fn make_decl(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 

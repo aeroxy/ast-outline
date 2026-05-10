@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -13,6 +13,8 @@ impl LanguageAdapter for RustAdapter {
     fn parse<'a, D: Doc>(&self, path: &Path, source: &[u8], root: Node<'a, D>) -> ParseResult {
         let mut decls = Vec::new();
         _walk_mod(&root, source, &mut decls);
+        let mut imports = Vec::new();
+        _walk_imports(&root, source, &mut imports);
         ParseResult {
             path: path.to_path_buf(),
             language: self.language_name(),
@@ -20,6 +22,7 @@ impl LanguageAdapter for RustAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports,
         }
     }
 }
@@ -206,6 +209,7 @@ fn _struct_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         native_kind: None,
         modifiers: Vec::new(),
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -240,6 +244,7 @@ fn _enum_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
                     modifiers: Vec::new(),
                     deprecated: false,
                     children: Vec::new(),
+                    calls: Vec::new(),
                 });
             }
         }
@@ -271,6 +276,7 @@ fn _enum_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         native_kind: None,
         modifiers: Vec::new(),
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -329,6 +335,7 @@ fn _trait_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         native_kind: None,
         modifiers: Vec::new(),
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -375,6 +382,7 @@ fn _impl_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         native_kind: None,
         modifiers: Vec::new(),
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -392,6 +400,11 @@ fn _function_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], is_method: bool
     let sig = collapse_ws(&String::from_utf8_lossy(&src[node.range().start..sig_end]))
         .trim_end_matches(&[' ', '{', ';'][..])
         .to_string();
+
+    let mut calls = Vec::new();
+    if let Some(body) = node.field("body") {
+        _walk_calls_in_body(&body, src, &mut calls);
+    }
 
     Declaration {
         kind: if is_method {
@@ -415,6 +428,248 @@ fn _function_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], is_method: bool
         native_kind: None,
         modifiers: Vec::new(),
         children: Vec::new(),
+        calls,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+//
+// Walks every descendant of a function body, emitting one `CallSite` per
+// call/macro invocation. Nested function-like decls (`function_item`,
+// `closure_expression`, `impl_item`, etc.) get their own `Declaration::calls`
+// so we stop descending into them here.
+// ---------------------------------------------------------------------------
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_item"
+            | "closure_expression"
+            | "impl_item"
+            | "trait_item"
+            | "struct_item"
+            | "enum_item"
+            | "mod_item"
+            | "macro_definition"
+    ) {
+        // Owned by another Declaration; skip recursion.
+        return;
+    }
+
+    if kind == "call_expression" {
+        if let Some(cs) = _call_site_from_call(node, src) {
+            out.push(cs);
+        }
+    } else if kind == "macro_invocation" {
+        if let Some(cs) = _call_site_from_macro(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let func = node.field("function")?;
+    let (name, receiver, kind) = _extract_callee_name(&func, src)?;
+    Some(CallSite {
+        name,
+        receiver,
+        line: node.start_pos().line() as u32 + 1,
+        kind,
+    })
+}
+
+fn _call_site_from_macro<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let macro_name = node.field("macro")?;
+    let (name, receiver, _) = _extract_callee_name(&macro_name, src)?;
+    Some(CallSite {
+        name,
+        receiver,
+        line: node.start_pos().line() as u32 + 1,
+        kind: CallKind::Macro,
+    })
+}
+
+fn _extract_callee_name<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<(String, Option<String>, CallKind)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" => {
+            let name = String::from_utf8_lossy(&src[node.range()]).to_string();
+            Some((name, None, CallKind::Call))
+        }
+        "field_expression" => {
+            // obj.method — `value` field is the receiver, `field` is the name
+            let value = node.field("value")?;
+            let field = node.field("field")?;
+            let name = String::from_utf8_lossy(&src[field.range()]).to_string();
+            let recv = String::from_utf8_lossy(&src[value.range()]).to_string();
+            Some((name, Some(recv), CallKind::Call))
+        }
+        "scoped_identifier" => {
+            // path::name() — last segment is the name, preceding path is the receiver.
+            let path = node.field("path");
+            let name_node = node.field("name")?;
+            let name = String::from_utf8_lossy(&src[name_node.range()]).to_string();
+            let recv = path.map(|p| String::from_utf8_lossy(&src[p.range()]).to_string());
+            let kind = if name == "new" {
+                CallKind::Construct
+            } else if recv.as_deref() == Some("super") {
+                CallKind::Super
+            } else {
+                CallKind::Call
+            };
+            Some((name, recv, kind))
+        }
+        "generic_function" => {
+            // foo::<T>() — function field is the inner identifier or path.
+            let func = node.field("function")?;
+            _extract_callee_name(&func, src)
+        }
+        _ => {
+            // Fall back to the last identifier-like token.
+            let txt = String::from_utf8_lossy(&src[node.range()]).to_string();
+            Some((txt, None, CallKind::Call))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import extraction
+//
+// Walks the file root for `use_declaration` nodes, expanding grouped uses
+// (`use foo::{a, b as c}`) and renames into per-name `ImportBinding`s.
+// ---------------------------------------------------------------------------
+
+fn _walk_imports<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<ImportBinding>) {
+    for child in node.children() {
+        let kind = child.kind();
+        let kind: &str = kind.as_ref();
+        if kind == "use_declaration" {
+            if let Some(arg) = child.field("argument") {
+                let line = child.start_pos().line() as u32 + 1;
+                _expand_use_tree(&arg, src, &Vec::new(), line, out);
+            }
+        }
+    }
+}
+
+fn _expand_use_tree<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+    prefix: &Vec<String>,
+    line: u32,
+    out: &mut Vec<ImportBinding>,
+) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" | "self" | "super" | "crate" => {
+            let name = String::from_utf8_lossy(&src[node.range()]).to_string();
+            let mut full = prefix.clone();
+            full.push(name.clone());
+            out.push(ImportBinding {
+                local: name,
+                module: full.join("::"),
+                line,
+            });
+        }
+        "scoped_identifier" => {
+            // path = nested scoped_identifier or identifier; name = trailing identifier
+            let mut full = prefix.clone();
+            if let Some(path) = node.field("path") {
+                _collect_scope_segments(&path, src, &mut full);
+            }
+            if let Some(name_node) = node.field("name") {
+                let local = String::from_utf8_lossy(&src[name_node.range()]).to_string();
+                full.push(local.clone());
+                out.push(ImportBinding {
+                    local,
+                    module: full.join("::"),
+                    line,
+                });
+            }
+        }
+        "use_as_clause" => {
+            // path AS alias
+            let path = node.field("path");
+            let alias = node.field("alias");
+            let mut full = prefix.clone();
+            if let Some(path) = path {
+                let mut segs: Vec<String> = Vec::new();
+                _collect_scope_segments(&path, src, &mut segs);
+                full.extend(segs);
+            }
+            let module = full.join("::");
+            let local = alias
+                .map(|a| String::from_utf8_lossy(&src[a.range()]).to_string())
+                .unwrap_or_else(|| {
+                    full.last().cloned().unwrap_or_default()
+                });
+            out.push(ImportBinding { local, module, line });
+        }
+        "use_list" | "scoped_use_list" => {
+            let mut new_prefix = prefix.clone();
+            if let Some(path) = node.field("path") {
+                _collect_scope_segments(&path, src, &mut new_prefix);
+            }
+            for child in node.children() {
+                let ck = child.kind();
+                let ck: &str = ck.as_ref();
+                if matches!(ck, "{" | "}" | ",") {
+                    continue;
+                }
+                _expand_use_tree(&child, src, &new_prefix, line, out);
+            }
+        }
+        "scoped_use_tree" => {
+            let mut new_prefix = prefix.clone();
+            if let Some(path) = node.field("path") {
+                _collect_scope_segments(&path, src, &mut new_prefix);
+            }
+            if let Some(list) = node.field("list") {
+                _expand_use_tree(&list, src, &new_prefix, line, out);
+            }
+        }
+        "use_wildcard" => { /* `use foo::*` — no specific binding to record */ }
+        _ => {
+            // Recurse into any remaining structures we don't recognize so we
+            // don't silently drop bindings on grammar shape changes.
+            for child in node.children() {
+                _expand_use_tree(&child, src, prefix, line, out);
+            }
+        }
+    }
+}
+
+fn _collect_scope_segments<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<String>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" | "self" | "super" | "crate" => {
+            out.push(String::from_utf8_lossy(&src[node.range()]).to_string());
+        }
+        "scoped_identifier" => {
+            if let Some(path) = node.field("path") {
+                _collect_scope_segments(&path, src, out);
+            }
+            if let Some(name) = node.field("name") {
+                out.push(String::from_utf8_lossy(&src[name.range()]).to_string());
+            }
+        }
+        _ => {
+            // Unknown; bail with raw text as fallback so resolution at least sees something.
+            out.push(String::from_utf8_lossy(&src[node.range()]).to_string());
+        }
     }
 }
 
@@ -456,6 +711,7 @@ fn _mod_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         native_kind: None,
         modifiers: Vec::new(),
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -492,6 +748,7 @@ fn _macro_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         native_kind: None,
         modifiers: Vec::new(),
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 
@@ -546,6 +803,7 @@ fn _foreign_mod_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declarati
         native_kind: None,
         modifiers: Vec::new(),
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -579,6 +837,7 @@ fn _associated_type_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Optio
         native_kind: None,
         modifiers: Vec::new(),
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -612,6 +871,7 @@ fn _const_or_static_to_field<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Opti
         native_kind: None,
         modifiers: Vec::new(),
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -645,6 +905,7 @@ fn _field_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declarat
         native_kind: None,
         modifiers: Vec::new(),
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -688,6 +949,7 @@ fn _positional_field_to_decl<'a, D: Doc>(
         native_kind: None,
         modifiers: Vec::new(),
         children: Vec::new(),
+        calls: Vec::new(),
     }
 }
 

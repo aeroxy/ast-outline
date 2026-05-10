@@ -708,7 +708,7 @@ impl Index {
                 return slot.clone();
             }
         }
-        let loaded = crate::deps::cache::load_if_fresh(&self.paths.root);
+        let loaded = crate::graph_cache::shared::get_or_init(&self.paths.root).ok().map(|u| u.deps.clone());
         if let Ok(mut w) = self.dep_graph.write() {
             *w = Some(loaded.clone());
         }

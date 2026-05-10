@@ -20,6 +20,7 @@ impl LanguageAdapter for CSharpAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports: Vec::new(),
         }
     }
 }
@@ -167,6 +168,7 @@ fn _ns_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -215,6 +217,7 @@ fn _type_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -252,6 +255,7 @@ fn _member_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 

@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ImportBinding, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -13,6 +13,8 @@ impl LanguageAdapter for PythonAdapter {
     fn parse<'a, D: Doc>(&self, path: &Path, source: &[u8], root: Node<'a, D>) -> ParseResult {
         let mut decls = Vec::new();
         _walk_module(&root, source, &mut decls);
+        let mut imports = Vec::new();
+        _walk_imports(&root, source, &mut imports);
         ParseResult {
             path: path.to_path_buf(),
             language: self.language_name(),
@@ -20,6 +22,7 @@ impl LanguageAdapter for PythonAdapter {
             line_count: source.iter().filter(|&&b| b == b'\n').count() + 1,
             declarations: decls,
             error_count: count_parse_errors(root.clone()),
+            imports,
         }
     }
 }
@@ -153,6 +156,7 @@ fn _class_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Declaration {
         modifiers: Vec::new(),
         deprecated: false,
         children,
+        calls: Vec::new(),
     }
 }
 
@@ -179,6 +183,10 @@ fn _function_to_decl<'a, D: Doc>(
     };
 
     let range = node.range();
+    let mut calls = Vec::new();
+    if let Some(b) = body.as_ref() {
+        _walk_calls_in_body(b, src, &mut calls);
+    }
     Declaration {
         kind,
         name: name.clone(),
@@ -197,6 +205,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls,
     }
 }
 
@@ -236,6 +245,7 @@ fn _assignment_to_decl<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<De
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
+        calls: Vec::new(),
     })
 }
 
@@ -295,5 +305,173 @@ fn _visibility_for_name(name: &str) -> String {
         "private".to_string()
     } else {
         String::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_definition" | "class_definition" | "lambda" | "decorated_definition"
+    ) {
+        return;
+    }
+
+    if kind == "call" {
+        if let Some(cs) = _call_site_from_call(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    let func = node.field("function")?;
+    let (name, receiver) = _extract_callee_name(&func, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver,
+        line,
+        kind: CallKind::Call,
+    })
+}
+
+fn _extract_callee_name<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<(String, Option<String>)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" => Some((String::from_utf8_lossy(&src[node.range()]).to_string(), None)),
+        "attribute" => {
+            // obj.method or pkg.mod.fn — last attribute is the name, prefix is receiver.
+            let object = node.field("object");
+            let attr = node.field("attribute")?;
+            let name = String::from_utf8_lossy(&src[attr.range()]).to_string();
+            let recv = object.map(|o| String::from_utf8_lossy(&src[o.range()]).to_string());
+            Some((name, recv))
+        }
+        _ => Some((String::from_utf8_lossy(&src[node.range()]).to_string(), None)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import extraction
+//
+// Handles:
+//   import foo
+//   import foo as bar
+//   import foo.bar
+//   from foo import bar
+//   from foo import bar as baz
+//   from foo import a, b
+//   from . import x
+// ---------------------------------------------------------------------------
+
+fn _walk_imports<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<ImportBinding>) {
+    for child in node.children() {
+        let kind = child.kind();
+        let kind: &str = kind.as_ref();
+        let line = child.start_pos().line() as u32 + 1;
+        match kind {
+            "import_statement" => _handle_import_statement(&child, src, line, out),
+            "import_from_statement" => _handle_import_from(&child, src, line, out),
+            _ => {}
+        }
+    }
+}
+
+fn _handle_import_statement<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+    line: u32,
+    out: &mut Vec<ImportBinding>,
+) {
+    for child in node.children() {
+        let k = child.kind();
+        let k: &str = k.as_ref();
+        match k {
+            "dotted_name" => {
+                let module = String::from_utf8_lossy(&src[child.range()]).to_string();
+                let local = module.split('.').next_back().unwrap_or(&module).to_string();
+                out.push(ImportBinding { local, module, line });
+            }
+            "aliased_import" => {
+                let name = child.field("name");
+                let alias = child.field("alias");
+                if let (Some(n), Some(a)) = (name, alias) {
+                    let module = String::from_utf8_lossy(&src[n.range()]).to_string();
+                    let local = String::from_utf8_lossy(&src[a.range()]).to_string();
+                    out.push(ImportBinding { local, module, line });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn _handle_import_from<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+    line: u32,
+    out: &mut Vec<ImportBinding>,
+) {
+    let module_node = node.field("module_name");
+    let module_prefix = module_node
+        .as_ref()
+        .map(|m| String::from_utf8_lossy(&src[m.range()]).to_string())
+        .unwrap_or_default();
+    let module_range = module_node.as_ref().map(|m| m.range());
+
+    // The `name` field is repeated (multiple names imported); iterate
+    // children for `dotted_name` / `aliased_import` after the module.
+    let mut past_module = module_range.is_none();
+    for child in node.children() {
+        let k = child.kind();
+        let k: &str = k.as_ref();
+        if !past_module {
+            if Some(child.range()) == module_range {
+                past_module = true;
+            }
+            continue;
+        }
+        match k {
+            "dotted_name" => {
+                let bare = String::from_utf8_lossy(&src[child.range()]).to_string();
+                let module = if module_prefix.is_empty() {
+                    bare.clone()
+                } else {
+                    format!("{}.{}", module_prefix, bare)
+                };
+                out.push(ImportBinding {
+                    local: bare,
+                    module,
+                    line,
+                });
+            }
+            "aliased_import" => {
+                let name = child.field("name");
+                let alias = child.field("alias");
+                if let (Some(n), Some(a)) = (name, alias) {
+                    let bare = String::from_utf8_lossy(&src[n.range()]).to_string();
+                    let module = if module_prefix.is_empty() {
+                        bare
+                    } else {
+                        format!("{}.{}", module_prefix, bare)
+                    };
+                    let local = String::from_utf8_lossy(&src[a.range()]).to_string();
+                    out.push(ImportBinding { local, module, line });
+                }
+            }
+            "wildcard_import" => { /* `from X import *` — no specific local */ }
+            _ => {}
+        }
     }
 }
