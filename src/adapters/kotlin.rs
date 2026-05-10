@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -146,7 +146,7 @@ fn _type_to_decl<'a, D: Doc>(
     _parent_kind: Option<&str>,
 ) -> Declaration {
     let kind = _class_decl_kind(node);
-    let name = field_text(node, "name").unwrap_or_else(|| "?".to_string());
+    let name = _decl_name(node);
     let bases = _delegation_bases(node, src);
     let attrs = _annotations(node, src);
     let docs = _kdocs(node);
@@ -184,7 +184,7 @@ fn _object_to_decl<'a, D: Doc>(
     src: &[u8],
     _parent_kind: Option<&str>,
 ) -> Declaration {
-    let name = field_text(node, "name").unwrap_or_else(|| "?".to_string());
+    let name = _decl_name(node);
     let bases = _delegation_bases(node, src);
     let attrs = _annotations(node, src);
     let docs = _kdocs(node);
@@ -221,7 +221,7 @@ fn _companion_to_decl<'a, D: Doc>(
     src: &[u8],
     _parent_kind: Option<&str>,
 ) -> Declaration {
-    let name = field_text(node, "name").unwrap_or_else(|| "Companion".to_string());
+    let name = _decl_name_or(node, "Companion");
     let bases = _delegation_bases(node, src);
     let attrs = _annotations(node, src);
     let docs = _kdocs(node);
@@ -373,11 +373,12 @@ fn _function_to_decl<'a, D: Doc>(
     } else {
         DeclarationKind::Function
     };
-    let name = field_text(node, "name").unwrap_or_else(|| "?".to_string());
+    let name = _decl_name(node);
     let attrs = _annotations(node, src);
     let docs = _kdocs(node);
     let visibility = _visibility(node);
     let signature = _callable_signature(node, src);
+    let calls = _extract_calls(node, src);
 
     let range = node.range();
     Declaration {
@@ -398,7 +399,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     }
 }
 
@@ -411,6 +412,7 @@ fn _secondary_ctor_to_decl<'a, D: Doc>(
     let docs = _kdocs(node);
     let visibility = _visibility(node);
     let signature = _callable_signature(node, src);
+    let calls = _extract_calls(node, src);
 
     let range = node.range();
     Declaration {
@@ -431,7 +433,7 @@ fn _secondary_ctor_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     }
 }
 
@@ -774,4 +776,132 @@ fn _skip_string_literal(s: &str, mut i: usize, quote: u8) -> usize {
         i += 1;
     }
     i
+}
+
+// tree-sitter-kotlin (fwcd) does NOT expose a "name" field on
+// function_declaration / class_declaration / object_declaration. The name is
+// a positional `simple_identifier` (or `type_identifier`) child sitting after
+// the keyword token. Try the field first for forward-compat with grammars
+// that do define it, then fall back to the first identifier child.
+fn _decl_name<'a, D: Doc>(node: &Node<'a, D>) -> String {
+    _decl_name_or(node, "?")
+}
+
+fn _decl_name_or<'a, D: Doc>(node: &Node<'a, D>, fallback: &str) -> String {
+    if let Some(n) = field_text(node, "name") {
+        return n;
+    }
+    for c in node.children() {
+        let k = c.kind();
+        let k: &str = k.as_ref();
+        if matches!(k, "simple_identifier" | "type_identifier" | "identifier") {
+            return c.text().into_owned();
+        }
+    }
+    fallback.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
+    let mut out = Vec::new();
+    let body = _callable_body(node).unwrap_or_else(|| node.clone());
+    _walk_calls_in_body(&body, src, &mut out);
+    out
+}
+
+fn _callable_body<'a, D: Doc>(node: &Node<'a, D>) -> Option<Node<'a, D>> {
+    for c in node.children() {
+        if c.kind() == "function_body" || c.kind() == "block" {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_declaration"
+            | "anonymous_function"
+            | "lambda_literal"
+            | "class_declaration"
+            | "object_declaration"
+            | "secondary_constructor"
+            | "getter"
+            | "setter"
+    ) {
+        return;
+    }
+
+    if kind == "call_expression" {
+        if let Some(cs) = _call_site_from_call_kt(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call_kt<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<CallSite> {
+    // tree-sitter-kotlin's call_expression is positional: first named child is
+    // the callee expression, second is the call_suffix carrying arguments.
+    let callee = node.children().find(|c| c.is_named() && c.kind() != "call_suffix")?;
+    let (name, receiver) = _extract_callee_name_kt(&callee, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver,
+        line,
+        kind: CallKind::Call,
+    })
+}
+
+fn _extract_callee_name_kt<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<(String, Option<String>)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "simple_identifier" | "identifier" => {
+            Some((String::from_utf8_lossy(&src[node.range()]).to_string(), None))
+        }
+        "navigation_expression" => {
+            // A navigation_expression has the receiver as the first named
+            // child and a navigation_suffix containing the member name.
+            let mut iter = node.children().filter(|c| c.is_named());
+            let receiver_node = iter.next()?;
+            let mut name = None;
+            for c in iter {
+                if c.kind() == "navigation_suffix" {
+                    for cc in c.children() {
+                        let k = cc.kind();
+                        if cc.is_named() && (k == "simple_identifier" || k == "identifier") {
+                            name = Some(String::from_utf8_lossy(&src[cc.range()]).to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+            let name = name?;
+            let recv = collapse_ws(&String::from_utf8_lossy(&src[receiver_node.range()]));
+            Some((name, Some(recv)))
+        }
+        _ => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            let trimmed = raw.split('<').next().unwrap_or(&raw).trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((trimmed, None))
+            }
+        }
+    }
 }

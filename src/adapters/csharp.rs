@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -235,6 +235,17 @@ fn _member_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
     } else {
         _member_signature_text(node, src)
     };
+    let calls = if matches!(
+        kind,
+        DeclarationKind::Method
+            | DeclarationKind::Constructor
+            | DeclarationKind::Destructor
+            | DeclarationKind::Operator
+    ) {
+        _extract_calls(node, src)
+    } else {
+        Vec::new()
+    };
 
     let range = node.range();
     Some(Declaration {
@@ -255,7 +266,7 @@ fn _member_to_decl<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<Declara
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     })
 }
 
@@ -512,4 +523,147 @@ fn _member_name<'a, D: Doc>(node: &Node<'a, D>, _src: &[u8]) -> Option<String> {
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
+    let mut out = Vec::new();
+    let body = _member_body(node).unwrap_or_else(|| node.clone());
+    _walk_calls_in_body(&body, src, &mut out);
+    out
+}
+
+fn _member_body<'a, D: Doc>(node: &Node<'a, D>) -> Option<Node<'a, D>> {
+    if let Some(b) = node.field("body") {
+        return Some(b);
+    }
+    for c in node.children() {
+        let k = c.kind();
+        if k == "block" || k == "arrow_expression_clause" {
+            return Some(c);
+        }
+    }
+    None
+}
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "class_declaration"
+            | "struct_declaration"
+            | "interface_declaration"
+            | "record_declaration"
+            | "record_struct_declaration"
+            | "enum_declaration"
+            | "method_declaration"
+            | "constructor_declaration"
+            | "destructor_declaration"
+            | "operator_declaration"
+            | "conversion_operator_declaration"
+            | "local_function_statement"
+            | "lambda_expression"
+            | "anonymous_method_expression"
+    ) {
+        return;
+    }
+
+    if kind == "invocation_expression" {
+        if let Some(cs) = _call_site_from_invocation(node, src) {
+            out.push(cs);
+        }
+    } else if kind == "object_creation_expression"
+        || kind == "implicit_object_creation_expression"
+    {
+        if let Some(cs) = _call_site_from_object_creation(node, src) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_invocation<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<CallSite> {
+    let func = node.field("function")?;
+    let (name, receiver) = _split_callee(&func, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver,
+        line,
+        kind: CallKind::Call,
+    })
+}
+
+fn _call_site_from_object_creation<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<CallSite> {
+    let type_node = node.field("type")?;
+    let raw = String::from_utf8_lossy(&src[type_node.range()]).to_string();
+    let name = _last_type_segment(&raw);
+    if name.is_empty() {
+        return None;
+    }
+    let line = node.start_pos().line() as u32 + 1;
+    Some(CallSite {
+        name,
+        receiver: None,
+        line,
+        kind: CallKind::Construct,
+    })
+}
+
+fn _split_callee<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Option<(String, Option<String>)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" | "generic_name" => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            Some((_strip_generics(&raw), None))
+        }
+        "member_access_expression" => {
+            let object = node.field("expression");
+            let name_node = node.field("name")?;
+            let raw = String::from_utf8_lossy(&src[name_node.range()]).to_string();
+            let recv = object
+                .map(|o| collapse_ws(&String::from_utf8_lossy(&src[o.range()])));
+            Some((_strip_generics(&raw), recv))
+        }
+        "qualified_name" => {
+            let name_node = node.field("name")?;
+            let qualifier = node.field("qualifier");
+            let raw = String::from_utf8_lossy(&src[name_node.range()]).to_string();
+            let recv = qualifier
+                .map(|q| collapse_ws(&String::from_utf8_lossy(&src[q.range()])));
+            Some((_strip_generics(&raw), recv))
+        }
+        "alias_qualified_name" => {
+            let name_node = node.field("name")?;
+            let raw = String::from_utf8_lossy(&src[name_node.range()]).to_string();
+            Some((_strip_generics(&raw), None))
+        }
+        _ => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            Some((_strip_generics(&raw), None))
+        }
+    }
+}
+
+fn _strip_generics(text: &str) -> String {
+    text.split('<').next().unwrap_or(text).trim().to_string()
+}
+
+fn _last_type_segment(text: &str) -> String {
+    let head = text.split('<').next().unwrap_or(text).trim();
+    head.rsplit('.').next().unwrap_or(head).trim().to_string()
 }

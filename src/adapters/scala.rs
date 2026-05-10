@@ -1,5 +1,5 @@
 use super::base::{collapse_ws, count_parse_errors, field_text, LanguageAdapter};
-use crate::core::{Declaration, DeclarationKind, ParseResult};
+use crate::core::{CallKind, CallSite, Declaration, DeclarationKind, ParseResult};
 use ast_grep_core::{Doc, Node};
 use std::path::Path;
 
@@ -606,6 +606,7 @@ fn _function_to_decl<'a, D: Doc>(
     let docs = _scaladocs(node);
     let visibility = _visibility(node);
     let signature = _callable_signature(node, src);
+    let calls = _extract_calls(node, src);
 
     let range = node.range();
     Declaration {
@@ -626,7 +627,7 @@ fn _function_to_decl<'a, D: Doc>(
         modifiers: Vec::new(),
         deprecated: false,
         children: Vec::new(),
-        calls: Vec::new(),
+        calls,
     }
 }
 
@@ -919,4 +920,143 @@ fn _skip_string_literal(s: &str, mut i: usize, quote: u8) -> usize {
 
 fn _field_text<'a, D: Doc>(node: &Node<'a, D>, field_name: &str) -> Option<String> {
     node.field(field_name).map(|n| n.text().into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// Call-site extraction
+// ---------------------------------------------------------------------------
+
+fn _extract_calls<'a, D: Doc>(node: &Node<'a, D>, src: &[u8]) -> Vec<CallSite> {
+    let mut out = Vec::new();
+    let body = node.field("body").unwrap_or_else(|| node.clone());
+    _walk_calls_in_body(&body, src, &mut out);
+    out
+}
+
+fn _walk_calls_in_body<'a, D: Doc>(node: &Node<'a, D>, src: &[u8], out: &mut Vec<CallSite>) {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    if matches!(
+        kind,
+        "function_definition"
+            | "function_declaration"
+            | "class_definition"
+            | "trait_definition"
+            | "object_definition"
+            | "lambda_expression"
+            | "case_class_pattern"
+    ) {
+        return;
+    }
+
+    if kind == "call_expression" {
+        if let Some(cs) = _call_site_from_call_scala(node, src, false) {
+            out.push(cs);
+        }
+    } else if kind == "instance_expression" {
+        if let Some(cs) = _call_site_from_instance(node, src) {
+            out.push(cs);
+        }
+    } else if kind == "generic_function" {
+        if let Some(cs) = _call_site_from_call_scala(node, src, false) {
+            out.push(cs);
+        }
+    }
+
+    for child in node.children() {
+        _walk_calls_in_body(&child, src, out);
+    }
+}
+
+fn _call_site_from_call_scala<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+    is_construct: bool,
+) -> Option<CallSite> {
+    let func = node
+        .field("function")
+        .or_else(|| node.children().find(|c| c.is_named()))?;
+    let (name, receiver) = _split_callee_scala(&func, src)?;
+    let line = node.start_pos().line() as u32 + 1;
+    let kind = if is_construct {
+        CallKind::Construct
+    } else {
+        CallKind::Call
+    };
+    Some(CallSite {
+        name,
+        receiver,
+        line,
+        kind,
+    })
+}
+
+fn _call_site_from_instance<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<CallSite> {
+    // `new T(...)` — find the first identifier-like child after `new`.
+    for c in node.children() {
+        if !c.is_named() {
+            continue;
+        }
+        let k = c.kind();
+        let k: &str = k.as_ref();
+        if matches!(
+            k,
+            "type_identifier" | "generic_type" | "stable_type_identifier" | "identifier"
+        ) {
+            let raw = String::from_utf8_lossy(&src[c.range()]).to_string();
+            let name = _last_type_segment_scala(&raw);
+            if !name.is_empty() {
+                let line = node.start_pos().line() as u32 + 1;
+                return Some(CallSite {
+                    name,
+                    receiver: None,
+                    line,
+                    kind: CallKind::Construct,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn _split_callee_scala<'a, D: Doc>(
+    node: &Node<'a, D>,
+    src: &[u8],
+) -> Option<(String, Option<String>)> {
+    let kind = node.kind();
+    let kind: &str = kind.as_ref();
+    match kind {
+        "identifier" | "operator_identifier" => {
+            Some((String::from_utf8_lossy(&src[node.range()]).to_string(), None))
+        }
+        "field_expression" => {
+            let value = node.field("value");
+            let field = node.field("field")?;
+            let name = String::from_utf8_lossy(&src[field.range()]).to_string();
+            let recv = value
+                .map(|v| collapse_ws(&String::from_utf8_lossy(&src[v.range()])));
+            Some((name, recv))
+        }
+        "generic_function" => {
+            let func = node.field("function")?;
+            _split_callee_scala(&func, src)
+        }
+        _ => {
+            let raw = String::from_utf8_lossy(&src[node.range()]).to_string();
+            let trimmed = raw.split('[').next().unwrap_or(&raw).trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((trimmed, None))
+            }
+        }
+    }
+}
+
+fn _last_type_segment_scala(text: &str) -> String {
+    let head = text.split('[').next().unwrap_or(text).trim();
+    head.rsplit('.').next().unwrap_or(head).trim().to_string()
 }

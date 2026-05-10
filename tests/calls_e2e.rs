@@ -424,6 +424,144 @@ fn callees_on_type_walks_multiple_levels_with_depth() {
 }
 
 #[test]
+fn java_callers_finds_intra_file_caller() {
+    // Single-file Java: pingTwice() calls greet(). Pass A in resolve.rs
+    // (same-file lookup) should promote the bare `greet` name to a
+    // Resolved qn pointing back to `Greeter::greet`.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>0.0.0</version></project>\n",
+    );
+    write(
+        &root.join("src/Greeter.java"),
+        r#"
+package smoke;
+public class Greeter {
+    public void greet() { System.out.println("hi"); }
+    public void pingTwice() { greet(); greet(); }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers output, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn java_callees_lists_construct_and_invocation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>x</artifactId><version>0.0.0</version></project>\n",
+    );
+    write(
+        &root.join("src/Demo.java"),
+        r#"
+package smoke;
+public class Demo {
+    public static String make() { return new String("x"); }
+    public static int len() { return make().length(); }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callees", "len", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callees exited non-zero: {}", out);
+    assert!(
+        out.contains("make") || out.contains("length"),
+        "expected `make` or `length` in callees, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn csharp_callers_finds_intra_file_caller() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("Smoke.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n",
+    );
+    write(
+        &root.join("src/Greeter.cs"),
+        r#"
+namespace Smoke;
+public class Greeter {
+    public void Greet() { System.Console.WriteLine("hi"); }
+    public void PingTwice() { Greet(); Greet(); }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "Greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("PingTwice"),
+        "expected `PingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn kotlin_callers_finds_intra_file_caller() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("build.gradle.kts"),
+        "plugins { kotlin(\"jvm\") version \"1.9.0\" }\n",
+    );
+    write(
+        &root.join("src/main/kotlin/Greeter.kt"),
+        r#"
+package smoke
+class Greeter {
+    fun greet() { println("hi") }
+    fun pingTwice() { greet(); greet() }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
+fn scala_callers_finds_intra_file_caller() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        &root.join("build.sbt"),
+        "name := \"smoke\"\nscalaVersion := \"2.13.10\"\n",
+    );
+    write(
+        &root.join("src/main/scala/Greeter.scala"),
+        r#"
+package smoke
+object Greeter {
+  def greet(): Unit = println("hi")
+  def pingTwice(): Unit = { greet(); greet() }
+}
+"#,
+    );
+    let (out, code) = run_in(root, &["callers", "greet", ".", "--rebuild"]);
+    assert_eq!(code, 0, "callers exited non-zero: {}", out);
+    assert!(
+        out.contains("pingTwice"),
+        "expected `pingTwice` in callers, got:\n{}",
+        out
+    );
+}
+
+#[test]
 fn callers_unknown_symbol_returns_error() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
